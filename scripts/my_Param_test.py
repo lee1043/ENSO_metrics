@@ -25,18 +25,19 @@ modnames = ['ACCESS1-0', 'ACCESS1-3', 'BCC-CSM1-1', 'BCC-CSM1-1-M', 'BNU-ESM',
             'MIROC-ESM', 'MIROC-ESM-CHEM', 'MIROC4h', 'MIROC5',
             'MPI-ESM-LR', 'MPI-ESM-MR', 'MPI-ESM-P', 'NorESM1-M', 'NorESM1-ME']
 
-#modnames = ['IPSL-CM5A-LR']
+modnames = ['IPSL-CM5A-LR']
 #modnames = ['BCC-CSM1-1']
 
 #=================================================
 # Metrics Collection
 #-------------------------------------------------
-metricsCollection = 'MC1'
-#metricsCollection = 'MC2'
+#metricsCollection = 'MC1'
+metricsCollection = 'ENSO_perf'
 
 #=================================================
 # Output
 #-------------------------------------------------
 outpathdata = '.' # e.g. '/user/directory/output/nc'
 outpathjson = '.' # e.g. '/user/directory/output/json'
-outnamejson = 'test_'+metricsCollection+'_all.json'
+#outnamejson = 'test_'+metricsCollection+'_all.json'
+outnamejson = 'test_'+metricsCollection+'_'+modnames[0]+'.json'
