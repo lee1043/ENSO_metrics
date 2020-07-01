@@ -1,4 +1,5 @@
 # -*- coding:UTF-8 -*-
+from __future__ import print_function
 from calendar import monthrange
 from copy import deepcopy
 from datetime import date
@@ -27,7 +28,7 @@ from EnsoCollectionsLib import CmipVariables
 from EnsoCollectionsLib import ReferenceObservations
 from EnsoCollectionsLib import ReferenceRegions
 import EnsoErrorsWarnings
-from EnsoToolsLib import FindXYMinMax, StringInDict
+from EnsoToolsLib import add_up_errors, find_xy_min_max, string_in_dict
 
 # uvcdat based functions:
 from cdms2 import createAxis as CDMS2createAxis
@@ -95,7 +96,7 @@ def ArrayZeros(tab, id='new_variable_zeros'):
     return CDMS2createVariable(MV2zeros(tab.shape), axes=tab.getAxisList(), grid=tab.getGrid(), mask=tab.mask, id=id)
 
 
-def AverageHorizontal(tab, areacell=None):
+def AverageHorizontal(tab, areacell=None, region=None, **kwargs):
     """
     #################################################################################
     Description:
@@ -106,39 +107,46 @@ def AverageHorizontal(tab, areacell=None):
     import cdutil
     help(cdutil.averager)
     """
+    keyerror = None
     lat_num = get_num_axis(tab, 'latitude')
     lon_num = get_num_axis(tab, 'longitude')
     snum = str(lat_num) + str(lon_num)
-    if areacell is None:
+    if areacell is None or tab.getGrid().shape != areacell.getGrid().shape:
+        print("\033[93m" + str().ljust(15) + "EnsoUvcdatToolsLib AverageHorizontal" + "\033[0m")
+        if areacell is not None and tab.getGrid().shape != areacell.getGrid().shape:
+            print("\033[93m" + str().ljust(25) + "tab.grid " + str(tab.getGrid().shape) +
+                  " is not the same as areacell.grid " + str(areacell.getGrid().shape) + " \033[0m")
         try: averaged_tab = cdutil.averager(tab, axis='xy', weights='weighted', action='average')
         except:
-            print " AverageHorizontal"
-            print '\033[93m' + str().ljust(15) + "EnsoUvcdatToolsLib AverageHorizontal" + '\033[0m'
-            print '\033[93m' + str().ljust(20) + "axes = " + str(snum) + '\033[0m'
             try: averaged_tab = cdutil.averager(tab, axis=snum, weights='weighted', action='average')
             except:
-                list_strings = [
-                    "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": horizontal average",
-                    str().ljust(5) + "cdutil.averager cannot perform horizontal average"
-                ]
-                EnsoErrorsWarnings.MyError(list_strings)
+                if 'regridding' not in kwargs.keys() or isinstance(kwargs['regridding'], dict) is False:
+                    kwargs2 = {'regridder': 'cdms', 'regridTool': 'esmf', 'regridMethod': 'linear',
+                               'newgrid_name': 'generic_1x1deg'}
+                else:
+                    kwargs2 = kwargs['regridding']
+                kwargs2["newgrid_name"] =\
+                    closest_grid(region, len(tab.getAxis(lat_num)[:]), len(tab.getAxis(lon_num)[:]))
+                print("\033[93m" + str().ljust(25) + "need to regrid to = " + str(kwargs2["newgrid_name"]) +
+                      " to perform average \033[0m")
+                tmp = Regrid(tab, None, region=region, **kwargs2)
+                try: averaged_tab = cdutil.averager(tmp, axis=snum, weights='weighted', action='average')
+                except:
+                    keyerror = "cannot perform horizontal average"
+                    averaged_tab = None
+                    list_strings = [
+                        "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": horizontal average",
+                        str().ljust(5) + "cdutil.averager cannot perform horizontal average"]
+                    EnsoErrorsWarnings.my_warning(list_strings)
     else:
-        if tab.getGrid().shape != areacell.getGrid().shape:
-            list_strings = [
-                "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": horizontal average",
-                str().ljust(5) + "tab (" + str(tab.getGrid().shape) + ") and areacell ("
-                + str(areacell.getGrid().shape) + ") are not on the same grid",
-                str().ljust(5) + "cannot perform horizontal average"
-            ]
-            EnsoErrorsWarnings.MyError(list_strings)
         averaged_tab = MV2multiply(tab, areacell)
         for elt in snum[::-1]:
             averaged_tab = MV2sum(averaged_tab, axis=int(elt))
         averaged_tab = averaged_tab / float(MV2sum(areacell))
-    return averaged_tab
+    return averaged_tab, keyerror
 
 
-def AverageMeridional(tab, areacell=None):
+def AverageMeridional(tab, areacell=None, region=None, **kwargs):
     """
     #################################################################################
     Description:
@@ -149,43 +157,55 @@ def AverageMeridional(tab, areacell=None):
     import cdutil
     help(cdutil.averager)
     """
+    keyerror = None
     lat_num = get_num_axis(tab, 'latitude')
+    lon_num = get_num_axis(tab, 'longitude')
     snum = str(lat_num)
-    if areacell is None:
+    if areacell is None or tab.getGrid().shape != areacell.getGrid().shape:
+        print("\033[93m" + str().ljust(15) + "EnsoUvcdatToolsLib AverageMeridional" + "\033[0m")
+        if areacell is not None and tab.getGrid().shape != areacell.getGrid().shape:
+            print("\033[93m" + str().ljust(25) + "tab.grid " + str(tab.getGrid().shape) +
+                  " is not the same as areacell.grid " + str(areacell.getGrid().shape) + " \033[0m")
         try: averaged_tab = cdutil.averager(tab, axis='y', weights='weighted', action='average')
         except:
             try: averaged_tab = cdutil.averager(tab, axis=snum, weights='weighted', action='average')
             except:
-                list_strings = [
-                    "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": meridional average",
-                    str().ljust(5) + "cdutil.averager cannot perform meridional average"
-                ]
-                EnsoErrorsWarnings.MyError(list_strings)
+                if 'regridding' not in kwargs.keys() or isinstance(kwargs['regridding'], dict) is False:
+                    kwargs2 = {'regridder': 'cdms', 'regridTool': 'esmf', 'regridMethod': 'linear',
+                               'newgrid_name': 'generic_1x1deg'}
+                else:
+                    kwargs2 = kwargs['regridding']
+                kwargs2["newgrid_name"] = \
+                    closest_grid(region, len(tab.getAxis(lat_num)[:]), len(tab.getAxis(lon_num)[:]))
+                print("\033[93m" + str().ljust(25) + "need to regrid to = " + str(kwargs2["newgrid_name"]) +
+                      " to perform average \033[0m")
+                tmp = Regrid(tab, None, region=region, **kwargs2)
+                try: averaged_tab = cdutil.averager(tmp, axis=snum, weights='weighted', action='average')
+                except:
+                    keyerror = "cannot perform meridional average"
+                    averaged_tab = None
+                    list_strings = [
+                        "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": meridional average",
+                        str().ljust(5) + "cdutil.averager cannot perform meridional average"]
+                    EnsoErrorsWarnings.my_warning(list_strings)
     else:
-        if tab.getGrid().shape != areacell.getGrid().shape:
-            list_strings = [
-                "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": horizontal average",
-                str().ljust(5) + "tab (" + str(tab.getGrid().shape) + ") and areacell ("
-                + str(areacell.getGrid().shape) + ") are not on the same grid",
-                str().ljust(5) + "cannot perform meridional average"
-            ]
-            EnsoErrorsWarnings.MyError(list_strings)
         lat_num_area = get_num_axis(areacell, 'latitude')
         averaged_tab = MV2multiply(tab, areacell)
         averaged_tab = MV2sum(averaged_tab, axis=lat_num) / MV2sum(areacell, axis=lat_num_area)
-    lon = tab.getLongitude()
-    if len(lon.shape) > 1:
-        lonn = CDMS2createAxis(MV2array(lon[0, :]), id='longitude')
-        lonn.units = lon.units
-        lon_num = get_num_axis(tab, 'longitude')
-        try:
-            averaged_tab.setAxis(lon_num, lonn)
-        except:
-            averaged_tab.setAxis(lon_num - 1, lonn)
-    return averaged_tab
+    if averaged_tab is not None:
+        lon = tab.getLongitude()
+        if len(lon.shape) > 1:
+            lonn = CDMS2createAxis(MV2array(lon[0, :]), id='longitude')
+            lonn.units = lon.units
+            lon_num = get_num_axis(tab, 'longitude')
+            try:
+                averaged_tab.setAxis(lon_num, lonn)
+            except:
+                averaged_tab.setAxis(lon_num - 1, lonn)
+    return averaged_tab, keyerror
 
 
-def AverageTemporal(tab, areacell=None):
+def AverageTemporal(tab, areacell=None, **kwargs):
     """
     #################################################################################
     Description:
@@ -196,20 +216,21 @@ def AverageTemporal(tab, areacell=None):
     import cdutil
     help(cdutil.averager)
     """
+    keyerror = None
     try: averaged_tab = cdutil.averager(tab, axis='t')
     except:
         time_num = get_num_axis(tab, 'time')
         try: averaged_tab = cdutil.averager(tab, axis=str(time_num))
         except:
-            list_strings = [
-                "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": temporal average",
-                str().ljust(5) + "cannot perform temporal average"
-            ]
-            EnsoErrorsWarnings.MyError(list_strings)
-    return averaged_tab
+            keyerror = "cannot perform temporal average"
+            averaged_tab = None
+            list_strings = ["ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": temporal average",
+                            str().ljust(5) + "cannot perform temporal average"]
+            EnsoErrorsWarnings.my_warning(list_strings)
+    return averaged_tab, keyerror
 
 
-def AverageZonal(tab, areacell=None):
+def AverageZonal(tab, areacell=None, region=None, **kwargs):
     """
     #################################################################################
     Description:
@@ -220,45 +241,113 @@ def AverageZonal(tab, areacell=None):
     import cdutil
     help(cdutil.averager)
     """
+    keyerror = None
+    lat_num = get_num_axis(tab, 'latitude')
     lon_num = get_num_axis(tab, 'longitude')
     snum = str(lon_num)
-    if areacell is None:
+    if areacell is None or tab.getGrid().shape != areacell.getGrid().shape:
+        print("\033[93m" + str().ljust(15) + "EnsoUvcdatToolsLib AverageZonal" + "\033[0m")
+        if areacell is not None and tab.getGrid().shape != areacell.getGrid().shape:
+            print("\033[93m" + str().ljust(25) + "tab.grid " + str(tab.getGrid().shape) +
+                  " is not the same as areacell.grid " + str(areacell.getGrid().shape) + " \033[0m")
         try: averaged_tab = cdutil.averager(tab, axis='x', weights='weighted', action='average')
         except:
             try: averaged_tab = cdutil.averager(tab, axis=snum, weights='weighted', action='average')
             except:
-                list_strings = [
-                    "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": zonal average",
-                    str().ljust(5) + "cdutil.averager cannot perform zonal average"
-                ]
-                EnsoErrorsWarnings.MyError(list_strings)
+                if 'regridding' not in kwargs.keys() or isinstance(kwargs['regridding'], dict) is False:
+                    kwargs2 = {'regridder': 'cdms', 'regridTool': 'esmf', 'regridMethod': 'linear',
+                               'newgrid_name': 'generic_1x1deg'}
+                else:
+                    kwargs2 = kwargs['regridding']
+                kwargs2["newgrid_name"] = \
+                    closest_grid(region, len(tab.getAxis(lat_num)[:]), len(tab.getAxis(lon_num)[:]))
+                print("\033[93m" + str().ljust(25) + "need to regrid to = " + str(kwargs2["newgrid_name"]) +
+                      " to perform average \033[0m")
+                tmp = Regrid(tab, None, region=region, **kwargs2)
+                try: averaged_tab = cdutil.averager(tmp, axis=snum, weights='weighted', action='average')
+                except:
+                    keyerror = "cannot perform zonal average"
+                    averaged_tab = None
+                    list_strings = ["ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": zonal average",
+                                    str().ljust(5) + "cdutil.averager cannot perform zonal average"]
+                    EnsoErrorsWarnings.my_warning(list_strings)
     else:
-        if tab.getGrid().shape != areacell.getGrid().shape:
-            list_strings = [
-                "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": horizontal average",
-                str().ljust(5) + "tab (" + str(tab.getGrid().shape) + ") and areacell ("
-                + str(areacell.getGrid().shape) + ") are not on the same grid",
-                str().ljust(5) + "cannot perform zonal average"
-            ]
-            EnsoErrorsWarnings.MyError(list_strings)
         lon_num_area = get_num_axis(areacell, 'longitude')
         averaged_tab = MV2multiply(tab, areacell)
         averaged_tab = MV2sum(averaged_tab, axis=lon_num) / MV2sum(areacell, axis=lon_num_area)
-    lat = tab.getLatitude()
-    if len(lat.shape) > 1:
-        latn = CDMS2createAxis(MV2array(lat[:, 0]), id='latitude')
-        latn.units = lat.units
-        lat_num = get_num_axis(tab, 'latitude')
-        try:
-            averaged_tab.setAxis(lat_num, latn)
-        except:
-            averaged_tab.setAxis(lat_num - 1, latn)
-    return averaged_tab
+    if averaged_tab is not None:
+        lat = tab.getLatitude()
+        if len(lat.shape) > 1:
+            latn = CDMS2createAxis(MV2array(lat[:, 0]), id='latitude')
+            latn.units = lat.units
+            lat_num = get_num_axis(tab, 'latitude')
+            try:
+                averaged_tab.setAxis(lat_num, latn)
+            except:
+                averaged_tab.setAxis(lat_num - 1, latn)
+    return averaged_tab, keyerror
 
 
 # Dictionary of averaging methods
 dict_average = {'horizontal': AverageHorizontal, 'meridional': AverageMeridional, 'time': AverageTemporal,
                 'zonal': AverageZonal}
+
+
+def Concatenate(tab1, tab2, events1=[], events2=[]):
+    my_events = events1 + events2
+    if len(my_events) > 0:
+        my_events_sort = sorted(my_events)
+        for yy in my_events_sort:
+            try:
+                tab_out
+            except:
+                if yy in events1:
+                    tab_out = MV2array([tab1[events1.index(yy)]])
+                else:
+                    tab_out = MV2array([tab2[events2.index(yy)]])
+            else:
+                if yy in events1:
+                    tab_out = MV2concatenate((tab_out, MV2array([tab1[events1.index(yy)]])))
+                else:
+                    tab_out = MV2concatenate((tab_out, MV2array([tab2[events2.index(yy)]])))
+        axes = CDMS2createAxis(MV2array(my_events_sort, dtype='int32'), id='years')
+        if len(events1):
+            tmp = deepcopy(tab1)
+        else:
+            tmp = deepcopy(tab2)
+        att = tmp.attributes
+        if len(tmp.shape) > 1:
+            mask = tmp[0].mask
+            mask2 = MV2zeros(tab_out.shape)
+            mask2[:] = mask
+            dictvar = {"axes": [axes] + tab1[0].getAxisList(), "mask": mask2, "grid": tmp.getGrid(), "attributes": att}
+        else:
+            dictvar = {"axes": [axes], "attributes": att}
+        tab_out = CDMS2createVariable(tab_out, **dictvar)
+    else:
+        tab_out = MyEmpty(tab1[:5, 0], time=True, time_id='years')
+    return tab_out
+
+
+def closest_grid(region, nlat, nlon):
+    res = [0.25, 0.50, 0.75, 1.00, 1.25, 1.50, 1.75, 2.00, 2.25, 2.50, 2.75]
+    region_ref = ReferenceRegions(region)
+    lats = region_ref['latitude']
+    dy = float(abs(max(lats) - min(lats))) / nlat
+    lyy = [abs(dy - ii) for ii in res]
+    lyy = res[lyy.index(min(lyy))]
+    lons = region_ref['longitude']
+    dx = float(abs(max(lons) - min(lons))) / nlon
+    lxx = [abs(dx - ii) for ii in res]
+    lxx = res[lxx.index(min(lxx))]
+    if lxx == lyy:
+        grid = "generic_" + str(lxx) + "x" + str(lxx) + "deg"
+    else:
+        dx = abs(lxx + lyy) / 2.
+        lxx = [abs(dx - ii) for ii in res]
+        lxx = res[lxx.index(min(lxx))]
+        grid = "generic_" + str(lxx) + "x" + str(lxx) + "deg"
+    return grid
 
 
 def ComputeInterannualAnomalies(tab):
@@ -303,7 +392,7 @@ def OperationAdd(tab, number_or_tab):
     """
     if not isinstance(number_or_tab, int) and not isinstance(number_or_tab, float):
         if tab.shape != number_or_tab.shape:
-            EnsoErrorsWarnings.MismatchShapesError(tab, number_or_tab, INSPECTstack())
+            EnsoErrorsWarnings.mismatch_shapes_error(tab, number_or_tab, INSPECTstack())
     return MV2add(tab, number_or_tab)
 
 
@@ -320,7 +409,7 @@ def OperationDivide(tab, number_or_tab):
     """
     if not isinstance(number_or_tab, int) and not isinstance(number_or_tab, float):
         if tab.shape != number_or_tab.shape:
-            EnsoErrorsWarnings.MismatchShapesError(tab, number_or_tab, INSPECTstack())
+            EnsoErrorsWarnings.mismatch_shapes_error(tab, number_or_tab, INSPECTstack())
     return MV2divide(tab, number_or_tab)
 
 
@@ -337,8 +426,17 @@ def OperationMultiply(tab, number_or_tab):
     """
     if not isinstance(number_or_tab, int) and not isinstance(number_or_tab, float):
         if tab.shape != number_or_tab.shape:
-            EnsoErrorsWarnings.MismatchShapesError(tab, number_or_tab, INSPECTstack())
-    return MV2multiply(tab, number_or_tab)
+            EnsoErrorsWarnings.mismatch_shapes_error(tab, number_or_tab, INSPECTstack())
+    tab_out = MV2multiply(tab, number_or_tab)
+    axes = tab.getAxisList()
+    att = tab.attributes
+    if len(tab.shape) > 1:
+        mask = tab.mask
+        dictvar = {"axes": axes, "mask": tab.mask, "grid": tab.getGrid(), "attributes": att}
+    else:
+        dictvar = {"axes": axes, "attributes": att}
+    tab_out = CDMS2createVariable(tab_out, **dictvar)
+    return tab_out
 
 
 def OperationSubtract(tab, number_or_tab):
@@ -354,7 +452,7 @@ def OperationSubtract(tab, number_or_tab):
     """
     if not isinstance(number_or_tab, int) and not isinstance(number_or_tab, float):
         if tab.shape != number_or_tab.shape:
-            EnsoErrorsWarnings.MismatchShapesError(tab, number_or_tab, INSPECTstack())
+            EnsoErrorsWarnings.mismatch_shapes_error(tab, number_or_tab, INSPECTstack())
     return MV2subtract(tab, number_or_tab)
 
 
@@ -396,19 +494,24 @@ def RmsAxis(tab, ref, weights=None, axis=0, centered=0, biased=1):
     :return rmse: float
         value of root mean square difference
     """
+    keyerror = None
     # Computes the root mean square difference
     try:
         rmse = GENUTILrms(tab, ref, weights=weights, axis=axis, centered=centered, biased=biased)
     except:
-        list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": RMS over axis " + str(axis),
-            str().ljust(5) + "cannot perform RMS along given axis",
-            str().ljust(10) + "axes may not be in the same order in 'ref' and 'tab'",
-            str().ljust(15) + "order: ref = " + str(ref.getOrder()) + ", tab = " + str(tab.getOrder()),
-            str().ljust(15) + "axes: ref = " + str(ref.getAxisList()) + ", tab = " + str(tab.getAxisList())
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
-    return float(rmse)
+        keyerror = "cannot perform RMS along given axis: tab (" + str(tab.shape) + ") and ref (" + str(ref.shape) +\
+                   ") are not on the same grid"
+        list_strings = ["ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": RMS over axis " + str(axis),
+                        str().ljust(5) + "cannot perform RMS along given axis",
+                        str().ljust(10) + "axes may not be in the same order in 'ref' and 'tab'",
+                        str().ljust(15) + "order: ref = " + str(ref.getOrder()) + ", tab = " + str(tab.getOrder()),
+                        str().ljust(15) + "axes: ref = " + str(ref.getAxisList()) + ", tab = " + str(tab.getAxisList())]
+        EnsoErrorsWarnings.my_warning(list_strings)
+    try:
+        rmse = float(rmse)
+    except:
+        rmse = None
+    return rmse, keyerror
 
 
 def RmsHorizontal(tab, ref, centered=0, biased=1):
@@ -434,6 +537,7 @@ def RmsHorizontal(tab, ref, centered=0, biased=1):
     :return rmse: float
         value of root mean square difference
     """
+    keyerror = None
     # Computes the root mean square difference
     try:
         rmse = GENUTILrms(tab, ref, weights='weighted', axis='xy', centered=centered, biased=biased)
@@ -444,16 +548,21 @@ def RmsHorizontal(tab, ref, centered=0, biased=1):
             rmse = GENUTILrms(tab, ref, weights='weighted', axis=str(lat_num)+str(lon_num), centered=centered,
                               biased=biased)
         except:
+            keyerror = "cannot perform horizontal RMS (x=" + str(lon_num) + ", y=" + str(lat_num) + "): tab (" +\
+                       str(tab.shape) + ") and ref (" + str(ref.shape) + ") are not on the same grid"
             list_strings = [
-                "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": horizontal RMS",
+                "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": horizontal RMS",
                 str().ljust(5) + "cannot perform horizontal RMS",
                 str().ljust(10) + "either lat and lon cannot be found in 'ref' / 'tab'",
                 str().ljust(10) + "or lat and lon are not in the same order in 'ref' and 'tab'",
                 str().ljust(15) + "order: ref = " + str(ref.getOrder()) + ", tab = " + str(tab.getOrder()),
-                str().ljust(15) + "axes: ref = " + str(ref.getAxisList()) + ", tab = " + str(tab.getAxisList())
-            ]
-            EnsoErrorsWarnings.MyError(list_strings)
-    return float(rmse)
+                str().ljust(15) + "axes: ref = " + str(ref.getAxisList()) + ", tab = " + str(tab.getAxisList())]
+            EnsoErrorsWarnings.my_warning(list_strings)
+    try:
+        rmse = float(rmse)
+    except:
+        rmse = None
+    return rmse, keyerror
 
 
 def RmsMeridional(tab, ref, centered=0, biased=1):
@@ -479,6 +588,7 @@ def RmsMeridional(tab, ref, centered=0, biased=1):
     :return rmse: float
         value of root mean square difference
     """
+    keyerror = None
     # Computes the root mean square difference
     try:
         rmse = GENUTILrms(tab, ref, axis='y', centered=centered, biased=biased)
@@ -487,16 +597,21 @@ def RmsMeridional(tab, ref, centered=0, biased=1):
         try:
             rmse = GENUTILrms(tab, ref, axis=str(lat_num), centered=centered, biased=biased)
         except:
+            keyerror = "cannot perform meridional RMS (y=" + str(lat_num) + "): tab (" + str(tab.shape) +\
+                       ") and ref (" + str(ref.shape) + ") are not on the same grid"
             list_strings = [
-                "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": meridional RMS",
+                "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": meridional RMS",
                 str().ljust(5) + "cannot perform meridional RMS",
                 str().ljust(10) + "lat cannot be found in 'ref' / 'tab'",
                 str().ljust(10) + "or lat is not in the same order in 'ref' and 'tab'",
                 str().ljust(15) + "order: ref = " + str(ref.getOrder()) + ", tab = " + str(tab.getOrder()),
-                str().ljust(15) + "axes: ref = " + str(ref.getAxisList()) + ", tab = " + str(tab.getAxisList())
-            ]
-            EnsoErrorsWarnings.MyError(list_strings)
-    return float(rmse)
+                str().ljust(15) + "axes: ref = " + str(ref.getAxisList()) + ", tab = " + str(tab.getAxisList())]
+            EnsoErrorsWarnings.my_warning(list_strings)
+    try:
+        rmse = float(rmse)
+    except:
+        rmse = None
+    return rmse, keyerror
 
 
 def RmsTemporal(tab, ref, centered=0, biased=1):
@@ -522,6 +637,7 @@ def RmsTemporal(tab, ref, centered=0, biased=1):
     :return rmse: float
         value of root mean square difference
     """
+    keyerror = None
     # Computes the root mean square difference
     try:
         rmse = GENUTILrms(tab, ref, axis='t', centered=centered, biased=biased)
@@ -530,16 +646,21 @@ def RmsTemporal(tab, ref, centered=0, biased=1):
         try:
             rmse = GENUTILrms(tab, ref, axis=str(time_num), centered=centered, biased=biased)
         except:
+            keyerror = "cannot perform temporal RMS (t=" + str(time_num) + "): tab (" + str(tab.shape) + \
+                       ") and ref (" + str(ref.shape) + ") are not on the same grid"
             list_strings = [
-                "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": temporal RMS",
+                "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": temporal RMS",
                 str().ljust(5) + "cannot perform temporal RMS",
                 str().ljust(10) + "time cannot be found in 'ref' / 'tab'",
                 str().ljust(10) + "or time is not in the same order in 'ref' and 'tab'",
                 str().ljust(15) + "order: ref = " + str(ref.getOrder()) + ", tab = " + str(tab.getOrder()),
-                str().ljust(15) + "axes: ref = " + str(ref.getAxisList()) + ", tab = " + str(tab.getAxisList())
-            ]
-            EnsoErrorsWarnings.MyError(list_strings)
-    return float(rmse)
+                str().ljust(15) + "axes: ref = " + str(ref.getAxisList()) + ", tab = " + str(tab.getAxisList())]
+            EnsoErrorsWarnings.my_warning(list_strings)
+    try:
+        rmse = float(rmse)
+    except:
+        rmse = None
+    return rmse, keyerror
 
 
 def RmsZonal(tab, ref, centered=0, biased=1):
@@ -565,6 +686,7 @@ def RmsZonal(tab, ref, centered=0, biased=1):
     :return rmse: float
         value of root mean square difference
     """
+    keyerror = None
     # Computes the root mean square difference
     try:
         rmse = GENUTILrms(tab, ref, axis='x', centered=centered, biased=biased)
@@ -573,33 +695,21 @@ def RmsZonal(tab, ref, centered=0, biased=1):
         try:
             rmse = GENUTILrms(tab, ref, axis=str(lon_num), centered=centered, biased=biased)
         except:
+            keyerror = "cannot perform zonal RMS (t=" + str(lon_num) + "): tab (" + str(tab.shape) + \
+                       ") and ref (" + str(ref.shape) + ") are not on the same grid"
             list_strings = [
-                "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": zonal RMS",
+                "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": zonal RMS",
                 str().ljust(5) + "cannot perform zonal RMS",
                 str().ljust(10) + "lon cannot be found in 'ref' / 'tab'",
                 str().ljust(10) + "or lon is not in the same order in 'ref' and 'tab'",
                 str().ljust(15) + "order: ref = " + str(ref.getOrder()) + ", tab = " + str(tab.getOrder()),
-                str().ljust(15) + "axes: ref = " + str(ref.getAxisList()) + ", tab = " + str(tab.getAxisList()),
-            ]
-            EnsoErrorsWarnings.MyError(list_strings)
-        # Computes the root mean square difference
-        try:
-            rmse = GENUTILrms(tab, ref, axis='t', centered=centered, biased=1)
-        except:
-            time_num = get_num_axis(tab, 'time')
-            try:
-                rmse = GENUTILrms(tab, ref, axis=str(time_num), centered=centered, biased=1)
-            except:
-                list_strings = [
-                    "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": temporal RMS",
-                    str().ljust(5) + "cannot perform temporal RMS",
-                    str().ljust(10) + "time cannot be found in 'ref' / 'tab'",
-                    str().ljust(10) + "or time is not in the same order in 'ref' and 'tab'",
-                    str().ljust(15) + "order: ref = " + str(ref.getOrder()) + ", tab = " + str(tab.getOrder()),
-                    str().ljust(15) + "axes: ref = " + str(ref.getAxisList()) + ", tab = " + str(tab.getAxisList())
-                ]
-                EnsoErrorsWarnings.MyError(list_strings)
-    return float(rmse)
+                str().ljust(15) + "axes: ref = " + str(ref.getAxisList()) + ", tab = " + str(tab.getAxisList())]
+            EnsoErrorsWarnings.my_warning(list_strings)
+    try:
+        rmse = float(rmse)
+    except:
+        rmse = None
+    return rmse, keyerror
 
 
 # Dictionary of RMS methods
@@ -618,13 +728,9 @@ def Std(tab, weights=None, axis=0, centered=1, biased=1):
     import genutil
     help(genutil.statistics.std)
     """
-    try:
-        grid = tab.getGrid()
-    except:
-        pass
     tmp = GENUTILstd(tab, weights=weights, axis=axis, centered=centered, biased=biased)
     try:
-        tmp.setGrid(grid)
+        tmp.setGrid(tab.getGrid())
     except:
         pass
     return tmp
@@ -656,17 +762,19 @@ def SumAxis(tab, axis=None, fill_value=0, dtype=None):
         An array with the same shape as tab, with the specified axis removed. If tab is a 0-d array, or if axis is None,
         a scalar is returned.
     """
+    keyerror = None
     try:
         sum_along_axis = MV2sum(tab, axis=axis, fill_value=fill_value, dtype=dtype)
     except:
+        keyerror = "cannot sum along given axis (" + str(axis) + "): tab (" + str(tab.shape) + ")"
+        sum_along_axis = None
         list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": sum over axis " + str(axis),
+            "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": sum over axis " + str(axis),
             str().ljust(5) + "cannot perform sum along given axis",
             str().ljust(10) + "axes: " + str(tab.getAxisList()),
-            str().ljust(15) + "axis = " + str(axis) + " ; fill_value = " + str(fill_value) + " ; dtype = " + str(dtype),
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
-    return sum_along_axis
+            str().ljust(15) + "axis = " + str(axis) + " ; fill_value = " + str(fill_value) + " ; dtype = " + str(dtype)]
+        EnsoErrorsWarnings.my_warning(list_strings)
+    return sum_along_axis, keyerror
 
 
 def TimeBounds(tab):
@@ -705,7 +813,9 @@ def annualcycle(tab):
     months = MV2array(list(tt.month for tt in time_ax))
     cyc = []
     for ii in range(12):
-        tmp = tab.compress(months == (ii + 1), axis=0)
+        ids = MV2compress(months == (ii + 1), range(len(tab)))
+        tmp = MV2take(tab, ids, axis=0)
+        # tmp = tab.compress(months == (ii + 1), axis=0)
         tmp = MV2average(tmp, axis=0)
         cyc.append(tmp)
         del tmp
@@ -743,13 +853,10 @@ def ApplyLandmask(tab, landmask, maskland=True, maskocean=False):
         if tab.getGrid().shape != landmask.getGrid().shape:
             keyerror = "tab (" + str(tab.getGrid().shape) + ") and landmask (" + str(landmask.getGrid().shape) +\
                        ") are not on the same grid"
-            list_strings = [
-                "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": applying landmask",
-                str().ljust(5) + keyerror,
-                str().ljust(5) + "cannot apply landmask",
-                str().ljust(5) + "this metric will be skipped"
-            ]
-            EnsoErrorsWarnings.MyWarning(list_strings)
+            list_strings = ["ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": applying landmask",
+                            str().ljust(5) + keyerror, str().ljust(5) + "cannot apply landmask",
+                            str().ljust(5) + "this metric will be skipped"]
+            EnsoErrorsWarnings.my_warning(list_strings)
         else:
             landmask_nd = MV2zeros(tab.shape)
             if landmask_nd.shape == landmask.shape:
@@ -764,11 +871,9 @@ def ApplyLandmask(tab, landmask, maskland=True, maskocean=False):
                         keyerror = "ApplyLandmask: tab must be more than 4D and this is not taken into account yet (" +\
                                    str(tab.shape) + ") and landmask (" + str(landmask.shape) + ")"
                         list_strings = [
-                            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": landmask shape",
-                            str().ljust(5) + keyerror,
-                            str().ljust(5) + "cannot reshape landmask"
-                        ]
-                        EnsoErrorsWarnings.MyWarning(list_strings)
+                            "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": landmask shape",
+                            str().ljust(5) + keyerror, str().ljust(5) + "cannot reshape landmask"]
+                        EnsoErrorsWarnings.my_warning(list_strings)
             if keyerror is None:
                 tab = MV2masked_where(landmask_nd.mask, tab)
                 # if land = 100 instead of 1, divides landmask by 100
@@ -809,11 +914,9 @@ def ApplyLandmaskToArea(area, landmask, maskland=True, maskocean=False):
             keyerror = "ApplyLandmaskToArea: area (" + str(area.getGrid().shape) + ") and landmask (" +\
                        str(landmask.getGrid().shape) + ") are not on the same grid"
             list_strings = [
-                "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": applying landmask to areacell",
-                str().ljust(5) + keyerror,
-                str().ljust(5) + "cannot apply landmask to areacell"
-            ]
-            EnsoErrorsWarnings.MyWarning(list_strings)
+                "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": applying landmask to areacell",
+                str().ljust(5) + keyerror, str().ljust(5) + "cannot apply landmask to areacell"]
+            EnsoErrorsWarnings.my_warning(list_strings)
         if keyerror is None:
             # if land = 100 instead of 1, divides landmask by 100
             if MV2minimum(landmask) == 0 and MV2maximum(landmask) == 100:
@@ -856,14 +959,13 @@ def ArrayToList(tab):
     elif len(tab.shape) == 2:
         tab_out = [list(tmp[ii]) for ii in range(len(tab))]
     else:
-        list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": bad shape",
-            str().ljust(5) + "cannot transform this array to a list",
-            str().ljust(10) + "the length (" + str(len(tab.shape)) + ") of the shape (" + str(tab.shape) +
-            ") is too large",
-            str().ljust(10) + "it is not programed yet",
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
+        tab_out = [None]
+        list_strings = ["ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": bad shape",
+                        str().ljust(5) + "cannot transform this array to a list",
+                        str().ljust(10) + "the length (" + str(len(tab.shape)) + ") of the shape (" + str(tab.shape) +
+                        ") is too large",
+                        str().ljust(10) + "it is not programed yet"]
+        EnsoErrorsWarnings.my_error(list_strings)
     return tab_out
 
 
@@ -882,7 +984,7 @@ def BasinMask(tab_in, region_mask, box=None, lat1=None, lat2=None, latkey='', lo
     if debug is True:
         dict_debug = {'line1': '(path) ' + str(this_dir), 'line2': '(file) ' + str(this_filename),
                       'line3': '(basin) ' + str(basin_generic_ncfile)}
-        EnsoErrorsWarnings.DebugMode('\033[93m', 'OSpath__split', 20, **dict_debug)
+        EnsoErrorsWarnings.debug_mode('\033[93m', 'OSpath__split', 20, **dict_debug)
     ff = CDMS2open(basin_generic_ncfile)
     # read basins
     if box is not None:
@@ -893,18 +995,18 @@ def BasinMask(tab_in, region_mask, box=None, lat1=None, lat2=None, latkey='', lo
     if debug is True:
         dict_debug = {'axes1': str([ax.id for ax in basin.getAxisList()]), 'shape1': str(basin.shape),
                       'line1': 'order = ' + str(basin.getOrder())}
-        EnsoErrorsWarnings.DebugMode('\033[93m', 'in BasinMask', 20, **dict_debug)
+        EnsoErrorsWarnings.debug_mode('\033[93m', 'in BasinMask', 20, **dict_debug)
     # choose basin
     keybasin = {'atlantic': 1, 'pacific': 2, 'indian': 3, 'antarctic': 10, 'arctic': 11}
     mask = MV2zeros(basin.shape)
     if region_mask.lower() not in keybasin.keys():
         keyerror = "unknown region: " + region_mask + " (basin_generic_1x1deg.nc, regrided file from NOAA NODC" + \
                    "WOA09 Masks basin Data Files)"
-        list_strings = ["WARNING" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": region",
+        list_strings = ["WARNING" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": region",
                         str().ljust(5) + keyerror,
                         str().ljust(5) + "https://iridl.ldeo.columbia.edu/SOURCES/.NOAA/.NODC/.WOA09/.Masks/.basin/"
                         + "datafiles.html"]
-        EnsoErrorsWarnings.MyWarning(list_strings)
+        EnsoErrorsWarnings.my_warning(list_strings)
     else:
         mask = MV2where(basin == keybasin[region_mask], 1, mask)
         mask = MV2where(basin.mask, 0, mask)
@@ -956,10 +1058,11 @@ def CheckTime(tab1, tab2, frequency='monthly', min_time_steps=None, metric_name=
     :return:
     """
     if debug is True:
-        dict_debug = {'shape1': 'tab1.shape = ' + str(tab1.shape), 'shape2': 'tab2.shape = ' + str(tab2.shape),
-                      'time1': 'tab1.time = ' + str(TimeBounds(tab1)), 'time2': 'tab2.time = ' + str(TimeBounds(tab2))}
-        EnsoErrorsWarnings.DebugMode('\033[93m', 'in CheckTime (input)', 20, **dict_debug)
-    keyerror = None
+        # dict_debug = {'shape1': 'tab1.shape = ' + str(tab1.shape), 'shape2': 'tab2.shape = ' + str(tab2.shape),
+        #               'time1': 'tab1.time = ' + str(TimeBounds(tab1)),
+        #               'time2': 'tab2.time = ' + str(TimeBounds(tab2))}
+        dict_debug = {'shape1': 'tab1.shape = ' + str(tab1.shape), 'shape2': 'tab2.shape = ' + str(tab2.shape)}
+        EnsoErrorsWarnings.debug_mode('\033[93m', 'in CheckTime (input)', 20, **dict_debug)
     # gets dates of the first and last the time steps of tab1
     stime1 = tab1.getTime().asComponentTime()[0]
     etime1 = tab1.getTime().asComponentTime()[-1]
@@ -1016,28 +1119,44 @@ def CheckTime(tab1, tab2, frequency='monthly', min_time_steps=None, metric_name=
         stime_adjust = CDTIMEcomptime(stime.year, 1, 1, 0, 0, 0.0)
         etime_adjust = CDTIMEcomptime(etime.year, 12, 31, 23, 59, 0)
     else:
-        EnsoErrorsWarnings.UnknownFrequency(frequency, INSPECTstack())
+        EnsoErrorsWarnings.unknown_frequency(frequency, INSPECTstack())
 
     # retains only the time-period common to both tab1 and tab2
     tab1_sliced = tab1(time=(stime_adjust, etime_adjust))
     tab2_sliced = tab2(time=(stime_adjust, etime_adjust))
     if debug is True:
+        # dict_debug = {'shape1': 'tab1.shape = ' + str(tab1_sliced.shape),
+        #               'shape2': 'tab2.shape = ' + str(tab2_sliced.shape),
+        #               'time1': 'tab1.time = ' + str(TimeBounds(tab1_sliced)),
+        #               'time2': 'tab1.time = ' + str(tab1_sliced.getTime().asComponentTime()[:]),
+        #               'time3': 'tab2.time = ' + str(TimeBounds(tab2_sliced)),
+        #               'time4': 'tab2.time = ' + str(tab2_sliced.getTime().asComponentTime()[:])}
         dict_debug = {'shape1': 'tab1.shape = ' + str(tab1_sliced.shape),
-                      'shape2': 'tab2.shape = ' + str(tab2_sliced.shape),
-                      'time1': 'tab1.time = ' + str(TimeBounds(tab1_sliced)),
-                      'time2': 'tab1.time = ' + str(tab1_sliced.getTime().asComponentTime()[:]),
-                      'time3': 'tab2.time = ' + str(TimeBounds(tab2_sliced)),
-                      'time4': 'tab2.time = ' + str(tab2_sliced.getTime().asComponentTime()[:])}
-        EnsoErrorsWarnings.DebugMode('\033[93m', 'in CheckTime (output)', 20, **dict_debug)
-    tab2_sliced.setAxis(0, tab1_sliced.getTime())
+                      'shape2': 'tab2.shape = ' + str(tab2_sliced.shape)}
+        EnsoErrorsWarnings.debug_mode('\033[93m', 'in CheckTime (output)', 20, **dict_debug)
+    if len(tab1_sliced.getTime()[:]) != len(tab2_sliced.getTime()[:]):
+        keyerror1 = "missing time step within the given period"
+    else:
+        keyerror1 = None
+        tab2_sliced.setAxis(0, tab1_sliced.getTime())
 
     # checks if the remaining time-period fulfills the minimum length criterion
     if min_time_steps is not None:
-        if len(tab1_sliced)<min_time_steps or len(tab2_sliced)<min_time_steps:
+        if len(tab1_sliced) < min_time_steps or len(tab2_sliced) < min_time_steps:
             shortest = min(len(tab1_sliced), len(tab2_sliced))
-            EnsoErrorsWarnings.TooShortTimePeriod(metric_name, shortest, min_time_steps, INSPECTstack())
-            keyerror = "too short time period (variable1:" + str(len(tab1_sliced)) + " ; variable2:" +\
-                       str(len(tab2_sliced)) + ")"
+            EnsoErrorsWarnings.too_short_time_period(metric_name, shortest, min_time_steps, INSPECTstack())
+            keyerror2 = "too short time period (variable1:" + str(len(tab1_sliced)) + " ; variable2:" +\
+                        str(len(tab2_sliced)) + ")"
+        else:
+            keyerror2 = None
+    else:
+        keyerror2 = None
+
+    # errors
+    if keyerror1 is not None or keyerror2 is not None:
+        keyerror = add_up_errors([keyerror1, keyerror2])
+    else:
+        keyerror = None
     return tab1_sliced, tab2_sliced, keyerror
 
 
@@ -1067,90 +1186,99 @@ def CheckUnits(tab, var_name, name_in_file, units, return_tab_only=True, **kwarg
     """
     keyerror = None
     if var_name in ['temperature']:
-        if units == 'K':
+        if units in ['K', 'Kelvin', 'Kelvins', 'degree K', 'degree Kelvin', 'degree Kelvins', 'degree_K',
+                     'degree_Kelvin', 'degree_Kelvins', 'degreeK', 'degreeKelvin', 'degreeKelvins', 'degrees K',
+                     'degrees Kelvin', 'degrees Kelvins', 'degrees_K', 'degrees_Kelvin', 'degrees_Kelvins', 'degreesK',
+                     'degreesKelvin', 'degreesKelvins', 'deg K', 'deg Kelvin', 'deg Kelvins', 'deg_K', 'deg_Kelvin',
+                     'deg_Kelvins', 'degK', 'degKelvin', 'degKelvins', 'deg. K', 'deg. Kelvin', 'deg. Kelvins']:
             # check if the temperature units is really K
             if float(MV2minimum(tab)) > 150:
                 # unit change of the temperature: from K to degC
                 tab = dict_operations['minus'](tab, 273.15)
-                units = "degC"
-            else:
-                minmax = [MV2minimum(tab),MV2maximum(tab)]
-                EnsoErrorsWarnings.UnlikelyUnits(var_name, name_in_file, units, minmax, INSPECTstack())
-                keyerror = "unlikely units: " + str(units) + "(" + str(minmax) + ")"
-        elif units in ['C', 'degree_Celsius', 'deg_Celsius', 'deg. C', 'degCelsius', 'degree_C', 'deg_C', 'degC',
-                       'degrees C']:
-            # check if the temperature units is really degC
-            if float(MV2minimum(tab)) < 50:
-                units = "degC"
             else:
                 minmax = [MV2minimum(tab), MV2maximum(tab)]
-                EnsoErrorsWarnings.UnlikelyUnits(var_name, name_in_file, minmax, units, INSPECTstack())
+                EnsoErrorsWarnings.unlikely_units(var_name, name_in_file, units, minmax, INSPECTstack())
+                keyerror = "unlikely units: " + str(units) + "(" + str(minmax) + ")"
+        elif units in ['C', 'celsius', 'Celsius', 'degree C', 'degree celsius', 'degree Celsius', 'degree_C',
+                       'degree_celsius', 'degree_Celsius', 'degreeC', 'degreecelsius', 'degreeCelsius', 'degrees C',
+                       'degrees celsius', 'degrees Celsius', 'degrees_C', 'degrees_celsius', 'degrees_Celsius',
+                       'degreesC', 'degreescelsius', 'degreesCelsius', 'deg C', 'deg celsius', 'deg Celsius', 'deg_C',
+                       'deg_celsius', 'deg_Celsius', 'degC', 'degcelsius', 'degCelsius', 'deg. C', 'deg. celsius',
+                       'deg. Celsius']:
+            # check if the temperature units is really degC
+            if float(MV2minimum(tab)) > 50:
+                minmax = [MV2minimum(tab), MV2maximum(tab)]
+                EnsoErrorsWarnings.unlikely_units(var_name, name_in_file, minmax, units, INSPECTstack())
                 keyerror = "unlikely units: " + str(units) + "(" + str(minmax) + ")"
         else:
-            EnsoErrorsWarnings.UnknownUnits(var_name, name_in_file, units, INSPECTstack())
+            EnsoErrorsWarnings.unknown_units(var_name, name_in_file, units, INSPECTstack())
             keyerror = "unknown units: " + str(units) + "(as " + str(var_name) + ")"
+        units = "degC"
     elif var_name in ['precipitations']:
-        if units == 'kg m-2 s-1':
+        if units in ["kg/m2/s", "kg m-2 s-1", "kg/m^2/s", "kg/m**2/s", "kg m**-2 s**-1", "Kg/m2/s", "Kg m-2 s-1",
+                     "Kg/m^2/s", "Kg/m**2/s", "Kg m**-2 s**-1"]:
             # changes units of the precipitation flux: from kg/(m2.s) to mm/day
             # it must be divided by the density of water = 1000 kg/m3
             #     and multiplied by 1000 (m to mm) and by 60*60*24 (s to day)
             tab = dict_operations['multiply'](tab, 86400)
-        elif units == 'mm/day':
+        elif units in ["mm/day", "mm day-1", 'mm day**-1', "mm/d", "mm d-1", 'mm d**-1']:
             pass
         else:
-            EnsoErrorsWarnings.UnknownUnits(var_name, name_in_file, units, INSPECTstack())
+            EnsoErrorsWarnings.unknown_units(var_name, name_in_file, units, INSPECTstack())
             keyerror = "unknown units: " + str(units) + "(as " + str(var_name) + ")"
+        units = "mm/day"
     elif var_name in ['wind stress']:
-        if units in ['N/m^2', 'Pa', 'N m-2', 'N/m2']:
-            units = "N/m2"
-        else:
-            EnsoErrorsWarnings.UnknownUnits(var_name, name_in_file, units, INSPECTstack())
+        if units not in ['N/m2', 'N m-2', 'N/m^2', 'N/m**2', 'N m**-2', 'Pa', 'pascal', 'pascals', 'Pascal', 'Pascals']:
+            EnsoErrorsWarnings.unknown_units(var_name, name_in_file, units, INSPECTstack())
             keyerror = "unknown units: " + str(units) + "(as " + str(var_name) + ")"
+        units = "N/m2"
     elif var_name in ['velocity']:
-        if units in ['cm s-1', 'cm/s', 'cm s**-1']:
+        if units in ['cm/s', 'cm s-1', 'cm s**-1', 'cm/sec', 'cm sec-1', 'cm sec**-1']:
             # unit change of the velocity: from cm/s to m/s
             tab = dict_operations['multiply'](tab, 1e-2)
-            units = "m/s"
-        elif units in ['m s-1', 'm/s', 'm s**-1', 'm/sec']:
-            units = "m/s"
+        elif units in ['m/s', 'm s-1', 'm s**-1', 'm/sec', 'm sec-1', 'm sec**-1']:
+            pass
         else:
-            EnsoErrorsWarnings.UnknownUnits(var_name, name_in_file, units, INSPECTstack())
+            EnsoErrorsWarnings.unknown_units(var_name, name_in_file, units, INSPECTstack())
             keyerror = "unknown units: " + str(units) + "(as " + str(var_name) + ")"
+        units = "m/s"
     elif var_name in ['heat flux']:
-        if units in ['W/m2', 'W m-2', 'W/m^2']:
-            units = "W/m2"
+        if units in ['W/m2', 'W m-2', 'W/m^2', 'W/m**2', 'W m**-2']:
+            pass
         else:
-            EnsoErrorsWarnings.UnknownUnits(var_name, name_in_file, units, INSPECTstack())
+            EnsoErrorsWarnings.unknown_units(var_name, name_in_file, units, INSPECTstack())
             keyerror = "unknown units: " + str(units) + "(as " + str(var_name) + ")"
+        units = "W/m2"
     elif var_name in ['pressure']:
-        if units in ['N/m^2', 'Pa', 'N m-2', 'N/m2']:
-            units = "Pa"
+        if units in ['N/m2', 'N m-2', 'N/m^2', 'N/m**2', 'N m**-2', 'Pa', 'pascal', 'pascals', 'Pascal', 'Pascals']:
+            pass
         else:
-            EnsoErrorsWarnings.UnknownUnits(var_name, name_in_file, units, INSPECTstack())
+            EnsoErrorsWarnings.unknown_units(var_name, name_in_file, units, INSPECTstack())
             keyerror = "unknown units: " + str(units) + "(as " + str(var_name) + ")"
+        units = "Pa"
     elif var_name in ['sea surface height']:
         if units in ['cm', 'centimeter']:
             # unit change of the sea surface height: from cm to m
             tab = dict_operations['multiply'](tab, 1e-2)
-            units = "m"
         elif units in ['m', 'meter']:
-            units = "m"
+            pass
         else:
-            EnsoErrorsWarnings.UnknownUnits(var_name, name_in_file, units, INSPECTstack())
+            EnsoErrorsWarnings.unknown_units(var_name, name_in_file, units, INSPECTstack())
             keyerror = "unknown units: " + str(units) + "(as " + str(var_name) + ")"
+        units = "m"
     else:
-        list_strings = ["WARNING" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": variable name",
+        list_strings = ["WARNING" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": variable name",
                         str().ljust(5) + "unknown variable name: " + var_name + " (" + name_in_file + ")"]
-        EnsoErrorsWarnings.MyWarning(list_strings)
+        EnsoErrorsWarnings.my_warning(list_strings)
     if return_tab_only is True:
-       return tab
+        return tab
     else:
         return tab, units, keyerror
 
 
 def Event_selection(tab, frequency, nbr_years_window=None, list_event_years=[]):
     if frequency not in ['daily', 'monthly', 'yearly']:
-        EnsoErrorsWarnings.UnknownFrequency(frequency, INSPECTstack())
+        EnsoErrorsWarnings.unknown_frequency(frequency, INSPECTstack())
     if len(list_event_years) == 0:
         tax = tab.getTime().asComponentTime()
         list_event_years = sorted(list(set([tax[ii].year for ii in range(len(tax))])))
@@ -1210,7 +1338,7 @@ def Event_selection(tab, frequency, nbr_years_window=None, list_event_years=[]):
                 units = 'months since ' + timebnds[0]
                 units_out = 'months since 0001-01-15 12:00:00'
             elif frequency == 'daily':
-                date1 = date(yy1, 01, 01)
+                date1 = date(yy1, 1, 1)
                 date2 = date(yy2, 12, 31)
                 length = (date2 - date1).days
                 units = 'days since ' + timebnds[0]
@@ -1231,8 +1359,8 @@ def Event_selection(tab, frequency, nbr_years_window=None, list_event_years=[]):
             axes = axes + tab.getAxisList()[1:]
         composite.setAxisList(axes)
     else:
-        time_ax = tab.getTime().asComponentTime() # gets component time of tab
-        list_years = [yy.year for yy in time_ax[:]] # listing years in tab (from component time)
+        time_ax = tab.getTime().asComponentTime()  # gets component time of tab
+        list_years = [yy.year for yy in time_ax[:]]  # listing years in tab (from component time)
         indices = MV2arange(tab.size)
         # creates a tab of 'condition' where True is set when the event is found, False otherwise
         try:
@@ -1240,8 +1368,8 @@ def Event_selection(tab, frequency, nbr_years_window=None, list_event_years=[]):
         except:
             list_event_years = [str(yy) for yy in list_event_years]
             condition = [True if str(yy) in list_event_years else False for yy in list_years]
-        ids = MV2compress(condition, indices) # gets indices of events
-        composite = MV2take(tab, ids, axis=0) # gets events
+        ids = MV2compress(condition, indices)  # gets indices of events
+        composite = MV2take(tab, ids, axis=0)  # gets events
         axis0 = CDMS2createAxis(MV2array(list_event_years, dtype='int32'), id='years')
         composite.setAxis(0, axis0)
     return composite
@@ -1326,16 +1454,18 @@ def Detrend(tab, info, axis=0, method='linear', bp=0):
         detrended data
     """
     if method not in ['linear', 'constant']:
+        new_tab = None
+        keyerror = "cannot detrend: unknown method"
         list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": method",
+            "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": method",
             str().ljust(5) + "unknown method: " + str(method)
         ]
-        EnsoErrorsWarnings.MyError(list_strings)
-    if method in ['linear', 'constant']:
+        EnsoErrorsWarnings.my_warning(list_strings)
+    else:
         axes = tab.getAxisList()
         grid = tab.getGrid()
         mask = tab.mask
-        mean = AverageTemporal(tab)
+        mean, keyerror = AverageTemporal(tab)
         new_tab = MV2array(SCIPYsignal_detrend(tab, axis=axis, type=method, bp=bp))
         new_tab = new_tab + mean
         new_tab = MV2masked_where(mask, new_tab)
@@ -1345,7 +1475,7 @@ def Detrend(tab, info, axis=0, method='linear', bp=0):
             info = info + ', time series are linearly detrended'
         else:
             info = info + ', the mean value of the time series is subtracted'
-    return new_tab, info
+    return new_tab, info, keyerror
 
 
 def DurationAllEvent(tab, threshold, nino=True, debug=False):
@@ -1498,12 +1628,10 @@ def get_num_axis(tab, name_axis):
                     num = nn
                     break
     if num is None:
-        list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": axis",
-            str().ljust(5) + "cannot find axis named: " + str(name_axis),
-            str().ljust(5) + "axes: " + str(tab.getAxisList()),
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
+        list_strings = ["ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": axis",
+                        str().ljust(5) + "cannot find axis named: " + str(name_axis),
+                        str().ljust(5) + "axes: " + str(tab.getAxisList())]
+        EnsoErrorsWarnings.my_error(list_strings)
     return num
 
 
@@ -1541,7 +1669,7 @@ def get_year_by_year(tab, frequency='monthly'):
         m2 = time_ax[-1].month
         t2 = 12
     else:
-        EnsoErrorsWarnings.UnknownFrequency(frequency, INSPECTstack())
+        EnsoErrorsWarnings.unknown_frequency(frequency, INSPECTstack())
     years = sorted(set(MV2array(list(tt.year for tt in time_ax))))
     tyy = CDMS2createAxis(MV2array(years, dtype='int32'), id='years')
     axes = [tyy] + [tmm]
@@ -1602,6 +1730,7 @@ def Normalize(tab, frequency):
     :return tab: masked_array
         normalized data
     """
+    keyerror = None
     axes = tab.getAxisList()
     if frequency == 'daily':
         time_steps_per_year = 365
@@ -1610,36 +1739,44 @@ def Normalize(tab, frequency):
     elif frequency == 'yearly':
         time_steps_per_year = 1
     else:
-        EnsoErrorsWarnings.UnknownFrequency(frequency, INSPECTstack())
-    if len(tab) % time_steps_per_year != 0:
-        list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": data length",
-            str().ljust(5) + "the normalization function needs only full years: " +
-            str(len(tab) // time_steps_per_year) +" years + " + str(len(tab) % time_steps_per_year),
-            str().ljust(10) + "frequency: " + str(frequency) + " (time steps per year = " + str(time_steps_per_year) +
-            "), len(dataset) = " + str(len(tab)) + ", so " + str(len(tab) / float(time_steps_per_year)) + " years",
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
-    # reshape tab like [yy,nb]
-    new_tab = list()
-    for yy in range(len(tab)/time_steps_per_year):
-        new_tab.append(tab[yy * time_steps_per_year:(yy + 1) * time_steps_per_year])
-    new_tab = MV2array(new_tab)
-    std = MV2zeros(new_tab[0].shape)
-    for dd in range(time_steps_per_year):
-        std[dd] = float(GENUTILstd(new_tab[:,dd], weights=None, axis=0, centered=1, biased=1))
-    tab_out = deepcopy(tab)
-    for yy in range(len(tab) / time_steps_per_year):
-        tab_out[yy * time_steps_per_year:(yy + 1) * time_steps_per_year] = \
-            tab_out[yy * time_steps_per_year:(yy + 1) * time_steps_per_year] / std
-    if len(tab.shape) == 1:
-        tab_out = CDMS2createVariable(tab_out, axes=axes, attributes=tab.attributes, id=tab.id)
+        keyerror = "unknown frequency"
+        time_steps_per_year = None
+        EnsoErrorsWarnings.unknown_frequency(frequency, INSPECTstack())
+    if time_steps_per_year is not None:
+        if len(tab) % time_steps_per_year != 0:
+            tab_out = None
+            keyerror = "cannot perform normalization: the function can only handle full years (len(tab) = " +\
+                       str(len(tab)) + ")"
+            list_strings = [
+                "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": data length",
+                str().ljust(5) + "the normalization function can only handle full years: " +
+                str(len(tab) // time_steps_per_year) + " years " + str(len(tab) % time_steps_per_year),
+                str().ljust(10) + "frequency: " + str(frequency) + " (time steps per year = " +
+                str(time_steps_per_year) + "), len(dataset) = " + str(len(tab)) + ", so " +
+                str(len(tab) / float(time_steps_per_year)) + " years",
+            ]
+            EnsoErrorsWarnings.my_warning(list_strings)
     else:
-        axes = axes + tab.getAxisList()[1:]
-        grid = tab.getGrid()
-        mask = tab.mask
-        tab_out = CDMS2createVariable(tab_out, axes=axes, grid=grid, mask=mask, attributes=tab.attributes, id=tab.id)
-    return tab_out
+        # reshape tab like [yy,nb]
+        new_tab = list()
+        for yy in range(len(tab)/time_steps_per_year):
+            new_tab.append(tab[yy * time_steps_per_year:(yy + 1) * time_steps_per_year])
+        new_tab = MV2array(new_tab)
+        std = MV2zeros(new_tab[0].shape)
+        for dd in range(time_steps_per_year):
+            std[dd] = float(GENUTILstd(new_tab[:,dd], weights=None, axis=0, centered=1, biased=1))
+        tab_out = deepcopy(tab)
+        for yy in range(len(tab) / time_steps_per_year):
+            tab_out[yy * time_steps_per_year:(yy + 1) * time_steps_per_year] = \
+                tab_out[yy * time_steps_per_year:(yy + 1) * time_steps_per_year] / std
+        if len(tab.shape) == 1:
+            tab_out = CDMS2createVariable(tab_out, axes=axes, attributes=tab.attributes, id=tab.id)
+        else:
+            axes = axes + tab.getAxisList()[1:]
+            grid = tab.getGrid()
+            mask = tab.mask
+            tab_out = CDMS2createVariable(tab_out, axes=axes, grid=grid, mask=mask, attributes=tab.attributes, id=tab.id)
+    return tab_out, keyerror
 
 
 def ReadAndSelectRegion(filename, varname, box=None, time_bounds=None, frequency=None, **kwargs):
@@ -1674,7 +1811,7 @@ def ReadAndSelectRegion(filename, varname, box=None, time_bounds=None, frequency
     # Open file and get time dimension
     fi = CDMS2open(filename)
     if box is None:  # no box given
-        if time_bounds is None: # no time period given
+        if time_bounds is None:  # no time period given
             # read file
             tab = fi(varname)
         else:  # time period given by the user
@@ -1683,16 +1820,12 @@ def ReadAndSelectRegion(filename, varname, box=None, time_bounds=None, frequency
     else:  # box given by the user
         # define box
         region_ref = ReferenceRegions(box)
-        nbox = cdutil.region.domain(latitude=region_ref['latitude'], longitude=region_ref['longitude'])
         if time_bounds is None:  # no time period given
             #  read file
-#            tab = fi(varname, nbox)
             tab = fi(varname, latitude=region_ref['latitude'], longitude=region_ref['longitude'])
         else:
             # read file
-#            tab = fi(varname, nbox, time=time_bounds)
             tab = fi(varname, time=time_bounds, latitude=region_ref['latitude'], longitude=region_ref['longitude'])
-    fi.close()
     # sign correction
     try:
         att1 = tab.attributes['standard_name'].lower().replace(" ", "_")
@@ -1702,8 +1835,11 @@ def ReadAndSelectRegion(filename, varname, box=None, time_bounds=None, frequency
         att2 = tab.attributes['long_name'].lower().replace(" ", "_")
     except:
         att2 = ''
-    if "latent_heat" in att1 or "latent_heat" in att2 or "sensible_heat" in att1 or "sensible_heat" in att2:
-        if "upward" in att1 or "upward" in att2:
+    if "latent_heat" in att1 or "latent_heat" in att2 or "sensible_heat" in att1 or "sensible_heat" in att2 or\
+            (varname in ["tauu", "tauuo", "tauv", "tauvo", "taux", "tauy", "uflx", "vflx"]):
+        if "upward" in att1 or "upward" in att2 or\
+                (varname in ["tauu", "tauuo", "tauv", "tauvo", "taux", "tauy", "uflx", "vflx"] and
+                 ("in_air" in att1 or "in_air" in att2)):
             # I need to be in the ocean point of view so the heat fluxes must be downwards
             tab = -1 * tab
     if time_bounds is not None:
@@ -1715,6 +1851,11 @@ def ReadAndSelectRegion(filename, varname, box=None, time_bounds=None, frequency
                 tab = tab[1:]
             if str(tab.getTime().asComponentTime()[-1]) > time_bounds[1]:
                 tab = tab[:-1]
+    time_ax = tab.getTime()
+    time_units = "days since " + str(time_ax.asComponentTime()[0].year) + "-01-01 12:00:00"
+    time_ax.id = "time"
+    time_ax.toRelativeTime(time_units)
+    tab.setAxis(0, time_ax)
     if frequency is None:  # no frequency given
         pass
     elif frequency == 'daily':
@@ -1724,7 +1865,7 @@ def ReadAndSelectRegion(filename, varname, box=None, time_bounds=None, frequency
     elif frequency == 'yearly':
         cdutil.setTimeBoundsYearly(tab)
     else:
-        EnsoErrorsWarnings.UnknownFrequency(frequency, INSPECTstack())
+        EnsoErrorsWarnings.unknown_frequency(frequency, INSPECTstack())
     # remove axis 'level' if its length is 1
     if tab.getLevel():
         if len(tab.getLevel()) == 1:
@@ -1732,6 +1873,37 @@ def ReadAndSelectRegion(filename, varname, box=None, time_bounds=None, frequency
     # HadISST has -1000 values... mask them
     if 'HadISST' in filename or 'hadisst' in filename:
         tab = MV2masked_where(tab == -1000, tab)
+    # check if the mask is constant through time
+    if len(NPwhere(tab[0].mask != tab[1:].mask)[0]) > 0:
+        # the mask is not constant -> make it constant
+        # sum mask through time
+        mask = MV2sum(tab.mask.astype('f'), axis=0)
+        # mask where at least one time step is masked
+        mask = MV2where(mask > 0, True, False)
+        # create a mask the same size as the original data
+        mask_nd = MV2zeros(tab.shape)
+        mask_nd[:] = mask
+        # apply mask to original data
+        tab = MV2masked_where(mask_nd, tab)
+    # check taux sign
+    if varname in ["taux", "tauu", "tauuo", "uflx"]:
+        # define box
+        region_ref = ReferenceRegions("nino4")
+        if time_bounds is None:  # no time period given
+            #  read file
+            taux = fi(varname, latitude=region_ref['latitude'], longitude=region_ref['longitude'])
+        else:
+            # read file
+            taux = fi(varname, time=time_bounds, latitude=region_ref['latitude'], longitude=region_ref['longitude'])
+        # horizontal average
+        taux, keyerror = AverageHorizontal(taux, region="nino4")
+        if keyerror is None:
+            taux, keyerror = AverageTemporal(taux)
+            if keyerror is None and float(taux) > 0:
+                print('\033[93m' + str().ljust(25) + "NOTE: taux sign reversed by the code (mean nino4 = " +
+                      str(float(taux)) + ")" + '\033[0m')
+                tab = -1 * tab
+    fi.close()
     return tab
 
 
@@ -1776,22 +1948,17 @@ def ReadAreaSelectRegion(filename, areaname='', box=None, **kwargs):
     else:  # box given by the user
         # define box
         region_ref = ReferenceRegions(box)
-        nbox = cdutil.region.domain(latitude=region_ref['latitude'], longitude=region_ref['longitude'])
         # read file
         try:
-#            areacell = fi(areaname, nbox)
             areacell = fi(areaname, latitude=region_ref['latitude'], longitude=region_ref['longitude'])
         except:
             try:
-#                areacell = fi('areacell', nbox)
                 areacell = fi('areacell', latitude=region_ref['latitude'], longitude=region_ref['longitude'])
             except:
                 try:
-#                    areacell = fi('areacella', nbox)
                     areacell = fi('areacella', latitude=region_ref['latitude'], longitude=region_ref['longitude'])
                 except:
                     try:
-#                        areacell = fi('areacello', nbox)
                         areacell = fi('areacello', latitude=region_ref['latitude'], longitude=region_ref['longitude'])
                     except:
                         areacell = None
@@ -1799,7 +1966,7 @@ def ReadAreaSelectRegion(filename, areaname='', box=None, **kwargs):
     return areacell
 
 
-def ReadLandmaskSelectRegion(filename, landmaskname='', box=None, **kwargs):
+def ReadLandmaskSelectRegion(tab, filename, landmaskname='', box=None, **kwargs):
     """
     #################################################################################
     Description:
@@ -1820,47 +1987,80 @@ def ReadLandmaskSelectRegion(filename, landmaskname='', box=None, **kwargs):
     """
     # Temp corrections for cdms2 to find the right axis
     CDMS2setAutoBounds('on')
-    # Open file and get time dimension
-    fi = CDMS2open(filename)
-    if box is None:  # no box given
-        # read file
-        try:
-            landmask = fi(landmaskname)
-        except:
+    # Get landmask
+    if OSpath__isfile(filename):
+        # Open file and get time dimension
+        fi = CDMS2open(filename)
+        if box is None:  # no box given
+            # read file
             try:
-                landmask = fi('landmask')
+                landmask = fi(landmaskname)
             except:
                 try:
-                    landmask = fi('lsmask')
+                    landmask = fi('landmask')
                 except:
                     try:
-                        landmask = fi('sftlf')
+                        landmask = fi('lsmask')
                     except:
-                        landmask = None
-    else:  # box given by the user
-        # define box
-        region_ref = ReferenceRegions(box)
-        nbox = cdutil.region.domain(latitude=region_ref['latitude'], longitude=region_ref['longitude'])
-        # read file
-        try:
-#            landmask = fi(landmaskname, nbox)
-            landmask = fi(landmaskname, latitude=region_ref['latitude'], longitude=region_ref['longitude'])
-        except:
+                        try:
+                            landmask = fi('sftlf')
+                        except:
+                            landmask = None
+        else:  # box given by the user
+            # define box
+            region_ref = ReferenceRegions(box)
+            # read file
             try:
-#                landmask = fi('landmask', nbox)
-                landmask = fi('landmask', latitude=region_ref['latitude'], longitude=region_ref['longitude'])
+                landmask = fi(landmaskname, latitude=region_ref['latitude'], longitude=region_ref['longitude'])
             except:
                 try:
-#                    landmask = fi('lsmask', nbox)
-                    landmask = fi('lsmask', latitude=region_ref['latitude'], longitude=region_ref['longitude'])
+                    landmask = fi('landmask', latitude=region_ref['latitude'], longitude=region_ref['longitude'])
                 except:
                     try:
-#                        landmask = fi('sftlf', nbox)
-                        landmask = fi('sftlf', latitude=region_ref['latitude'], longitude=region_ref['longitude'])
+                        landmask = fi('lsmask', latitude=region_ref['latitude'], longitude=region_ref['longitude'])
                     except:
-                        landmask = None
-    fi.close()
+                        try:
+                            landmask = fi('sftlf', latitude=region_ref['latitude'], longitude=region_ref['longitude'])
+                        except:
+                            landmask = None
+        fi.close()
+    else:
+        landmask = None
+    if OSpath__isfile(filename) is False or landmask is None or tab.getGrid().shape != landmask.getGrid().shape:
+        # Estimate landmask
+        landmask = EstimateLandmask(tab)
+        if box is not None:
+            # define box
+            region_ref = ReferenceRegions(box)
+            # subset
+            landmask = landmask(latitude=region_ref['latitude'], longitude=region_ref['longitude'])
+    # Return
     return landmask
+
+
+def EstimateLandmask(d):
+    """
+    #################################################################################
+    Description:
+    Estimate landmask (when landmask was not given) 
+    Uses cdutil (uvcdat) to create estimated landmask for model resolution
+    #################################################################################
+
+    :param d: array (CDMS)
+        model variable 
+
+    :return landmask: masked_array
+        masked_array containing landmask
+    """
+    print('\033[93m' + str().ljust(25) + 'NOTE: Estimated landmask applied' + '\033[0m')
+    n = 1
+    sft = cdutil.generateLandSeaMask(d(*(slice(0, 1),) * n)) * 100.0
+    sft[:] = sft.filled(100.0)
+    lmsk = sft
+    lmsk.setAxis(0, d.getAxis(1))
+    lmsk.setAxis(1, d.getAxis(2))
+    lmsk.id = 'sftlf'
+    return lmsk
 
 
 def Regrid(tab_to_regrid, newgrid, missing=None, order=None, mask=None, regridder='cdms', regridTool='esmf',
@@ -1916,39 +2116,36 @@ def Regrid(tab_to_regrid, newgrid, missing=None, order=None, mask=None, regridde
     :return new_tab: masked_array
         tab_to_regrid regridded on newgrid
     """
-    known_args = {'newgrid_name', 'region'}
+    known_args = {"newgrid_name", "region"}
     extra_args = set(kwargs) - known_args
     if extra_args:
-        EnsoErrorsWarnings.UnknownKeyArg(extra_args, INSPECTstack())
+        EnsoErrorsWarnings.unknown_key_arg(extra_args, INSPECTstack())
     # test given arguments
-    known_regridder = ['cdms', 'cdmsHorizontal']
+    known_regridder = ["cdms", "cdmsHorizontal"]
     if regridder not in known_regridder:
         list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": regridder",
+            "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": regridder",
             str().ljust(5) + "unknown regridder: " + str(regridder),
-            str().ljust(10) + "known regridder: " + str(known_regridder)
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
-    elif regridder == 'cdms':
-        if regridTool in ['regrid2', 'libcf']:
-            list_method = [None, 'linear']
-        elif regridTool == 'esmf':
-            list_method = [None, 'conserve', 'linear', 'patch']
-        if (regridTool is not None) and (regridTool not in ['regrid2', 'esmf', 'libcf']):
+            str().ljust(10) + "known regridder: " + str(known_regridder)]
+        EnsoErrorsWarnings.my_error(list_strings)
+    elif regridder == "cdms":
+        if regridTool in ["regrid2", "libcf"]:
+            list_method = [None, "linear"]
+        elif regridTool == "esmf":
+            list_method = [None, "conserve", "linear", "patch"]
+        if (regridTool is not None) and (regridTool not in ["regrid2", "esmf", "libcf"]):
             list_strings = [
-                "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": regridTool",
+                "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": regridTool",
                 str().ljust(5) + "unknown regridTool: " + str(regridTool),
-                str().ljust(10) + "known regridTool: " + str(['regrid2', 'esmf', 'libcf'])
-            ]
-            EnsoErrorsWarnings.MyError(list_strings)
+                str().ljust(10) + "known regridTool: " + str(["regrid2", "esmf", "libcf"])]
+            EnsoErrorsWarnings.my_error(list_strings)
         elif regridMethod not in list_method:
             list_strings = [
-                "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": regridMethod",
+                "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": regridMethod",
                 str().ljust(5) + "unknown regridMethod (" + str(regridMethod) + ") for this regridTool ("
                 + str(regridTool) + ")",
-                str().ljust(10) + "known regridMethod: " + str(list_method)
-            ]
-            EnsoErrorsWarnings.MyError(list_strings)
+                str().ljust(10) + "known regridMethod: " + str(list_method)]
+            EnsoErrorsWarnings.my_error(list_strings)
     # test the given 'newgrid'
     if isinstance(newgrid, basestring) or newgrid is None:
         #
@@ -1956,34 +2153,49 @@ def Regrid(tab_to_regrid, newgrid, missing=None, order=None, mask=None, regridde
         # to do this, kwargs['newgrid_name'] and kwargs['region'] must be defined
         #
         # define the grid type
-        for gtype in ['equalarea', 'gaussian', 'generic', 'uniform']:
+        for gtype in ["equalarea", "gaussian", "generic", "uniform"]:
             if gtype in kwargs['newgrid_name']:
                 GridType = gtype
                 break
         try:
             GridType
         except:
-            GridType = 'generic'
+            GridType = "generic"
         # define resolution (same resolution in lon and lat)
-        for res in ['0.25x0.25deg', '0.5x0.5deg', '1x1deg', '2x2deg']:
+        for res in ["0.25x0.25deg", "0.5x0.5deg", "0.75x0.75deg", "1x1deg", "1.25x1.25deg", "1.5x1.5deg",
+                    "1.75x1.75deg", "2x2deg", "2.25x2.25deg", "2.5x2.5deg", "2.75x2.75deg"]:
             if res in kwargs['newgrid_name']:
-                if res == '0.25x0.25deg':
+                if res == "0.25x0.25deg":
                     GridRes = 0.25
-                elif res == '0.5x0.5deg':
+                elif res == "0.5x0.5deg":
                     GridRes = 0.5
-                elif res == '1x1deg':
+                elif res == "0.75x0.75deg":
+                    GridRes = 0.75
+                elif res == "1x1deg":
                     GridRes = 1.
-                else:
+                elif res == "1.25x1.25deg":
+                    GridRes = 1.25
+                elif res == "1.5x1.5deg":
+                    GridRes = 1.5
+                elif res == "1.75x1.75deg":
+                    GridRes = 1.75
+                elif res == "2x2deg":
                     GridRes = 2.
+                elif res == "2.25x2.25deg":
+                    GridRes = 2.25
+                elif res == "2.5x2.5deg":
+                    GridRes = 2.5
+                else:
+                    GridRes = 2.75
                 break
         try:
             GridRes
         except:
             GridRes = 1.
         # define bounds of 'region'
-        region_ref = ReferenceRegions(kwargs['region'])
-        lat1, lat2 = region_ref['latitude'][0], region_ref['latitude'][1]
-        lon1, lon2 = region_ref['longitude'][0], region_ref['longitude'][1]
+        region_ref = ReferenceRegions(kwargs["region"])
+        lat1, lat2 = region_ref["latitude"][0], region_ref["latitude"][1]
+        lon1, lon2 = region_ref["longitude"][0], region_ref["longitude"][1]
         # create uniform axis
         nlat = lat2 - lat1
         lat = CDMS2createUniformLatitudeAxis(lat1 + (GridRes / 2.), nlat, GridRes)
@@ -1991,16 +2203,24 @@ def Regrid(tab_to_regrid, newgrid, missing=None, order=None, mask=None, regridde
         lon = CDMS2createUniformLongitudeAxis(lon1 + (GridRes / 2.), nlon, GridRes)
         # create grid
         newgrid = CDMS2createRectGrid(lat, lon, "yx", type=GridType, mask=None)
-        newgrid.id = kwargs['newgrid_name']
+        newgrid.id = kwargs["newgrid_name"]
     #
     # regrid
     #
-    if regridder == 'cdms':
+    if regridder == "cdms":
+        axis = tab_to_regrid.getAxis(0)
+        idname = deepcopy(axis.id)
+        if len(tab_to_regrid.shape) == 3 and (axis.id == "months" or axis.id == "years"):
+            axis.id = "time"
+            tab_to_regrid.setAxis(0, axis)
         new_tab = tab_to_regrid.regrid(newgrid, missing=missing, order=order, mask=mask, regridTool=regridTool,
                                        regridMethod=regridMethod)
+        axis = tab_to_regrid.getAxis(0)
+        axis.id = idname
+        tab_to_regrid.setAxis(0, axis)
         if tab_to_regrid.getGrid().shape == newgrid.shape:
             new_tab = MV2masked_where(tab_to_regrid.mask, new_tab)
-    elif regridder == 'cdmsHorizontal':
+    else:
         regridFCT = REGRID2horizontal__Horizontal(tab_to_regrid.getGrid(), newgrid)
         new_tab = regridFCT(tab_to_regrid)
     return new_tab
@@ -2014,89 +2234,99 @@ def SaveNetcdf(netcdf_name, var1=None, var1_attributes={}, var1_name='', var1_ti
                var8_attributes={}, var8_name='', var8_time_name=None, var9=None, var9_attributes={}, var9_name='',
                var9_time_name=None, var10=None, var10_attributes={}, var10_name='', var10_time_name=None, var11=None,
                var11_attributes={}, var11_name='', var11_time_name=None, var12=None, var12_attributes={}, var12_name='',
-               var12_time_name=None, frequency='monthly', global_attributes={}):
+               var12_time_name=None, frequency="monthly", global_attributes={}, **kwargs):
     if OSpath_isdir(ntpath.dirname(netcdf_name)) is not True:
         list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": given path does not exist",
-            str().ljust(5) + "netcdf_name = " + str(netcdf_name)
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
+            "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": given path does not exist",
+            str().ljust(5) + "netcdf_name = " + str(netcdf_name)]
+        EnsoErrorsWarnings.my_error(list_strings)
     if OSpath__isfile(netcdf_name) is True:
-        o = CDMS2open(netcdf_name, 'a')
+        o = CDMS2open(netcdf_name, "a")
     else:
-        o = CDMS2open(netcdf_name, 'w+')
+        o = CDMS2open(netcdf_name, "w+")
     if var1 is not None:
         if var1_name == '':
             var1_name = var1.id
         if var1_time_name is not None:
             var1 = TimeButNotTime(var1, var1_time_name, frequency)
-        o.write(var1, attributes=var1_attributes, dtype='float32', id=var1_name)
+        o.write(var1, attributes=var1_attributes, dtype="float32", id=var1_name)
     if var2 is not None:
         if var2_name == '':
             var2_name = var2.id
         if var2_time_name is not None:
             var2 = TimeButNotTime(var2, var2_time_name, frequency)
-        o.write(var2, attributes=var2_attributes, dtype='float32', id=var2_name)
+        o.write(var2, attributes=var2_attributes, dtype="float32", id=var2_name)
     if var3 is not None:
         if var3_name == '':
             var3_name = var3.id
         if var3_time_name is not None:
             var3 = TimeButNotTime(var3, var3_time_name, frequency)
-        o.write(var3, attributes=var3_attributes, dtype='float32', id=var3_name)
+        o.write(var3, attributes=var3_attributes, dtype="float32", id=var3_name)
     if var4 is not None:
         if var4_name == '':
             var4_name = var4.id
         if var4_time_name is not None:
             var4 = TimeButNotTime(var4, var4_time_name, frequency)
-        o.write(var4, attributes=var4_attributes, dtype='float32', id=var4_name)
+        o.write(var4, attributes=var4_attributes, dtype="float32", id=var4_name)
     if var5 is not None:
         if var5_name == '':
             var5_name = var5.id
         if var5_time_name is not None:
             var5 = TimeButNotTime(var5, var5_time_name, frequency)
-        o.write(var5, attributes=var5_attributes, dtype='float32', id=var5_name)
+        o.write(var5, attributes=var5_attributes, dtype="float32", id=var5_name)
     if var6 is not None:
         if var6_name == '':
             var6_name = var6.id
         if var6_time_name is not None:
             var6 = TimeButNotTime(var6, var6_time_name, frequency)
-        o.write(var6, attributes=var6_attributes, dtype='float32', id=var6_name)
+        o.write(var6, attributes=var6_attributes, dtype="float32", id=var6_name)
     if var7 is not None:
         if var7_name == '':
             var7_name = var7.id
         if var7_time_name is not None:
             var7 = TimeButNotTime(var7, var7_time_name, frequency)
-        o.write(var7, attributes=var7_attributes, dtype='float32', id=var7_name)
+        o.write(var7, attributes=var7_attributes, dtype="float32", id=var7_name)
     if var8 is not None:
         if var8_name == '':
             var8_name = var8.id
         if var8_time_name is not None:
             var8 = TimeButNotTime(var8, var8_time_name, frequency)
-        o.write(var8, attributes=var8_attributes, dtype='float32', id=var8_name)
+        o.write(var8, attributes=var8_attributes, dtype="float32", id=var8_name)
     if var9 is not None:
         if var9_name == '':
             var9_name = var9.id
         if var9_time_name is not None:
             var9 = TimeButNotTime(var9, var9_time_name, frequency)
-        o.write(var9, attributes=var9_attributes, dtype='float32', id=var9_name)
+        o.write(var9, attributes=var9_attributes, dtype="float32", id=var9_name)
     if var10 is not None:
         if var10_name == '':
             var10_name = var10.id
         if var10_time_name is not None:
             var10 = TimeButNotTime(var10, var10_time_name, frequency)
-        o.write(var10, attributes=var10_attributes, dtype='float32', id=var10_name)
+        o.write(var10, attributes=var10_attributes, dtype="float32", id=var10_name)
     if var11 is not None:
         if var11_name == '':
             var11_name = var11.id
         if var11_time_name is not None:
             var11 = TimeButNotTime(var11, var11_time_name, frequency)
-        o.write(var11, attributes=var11_attributes, dtype='float32', id=var11_name)
+        o.write(var11, attributes=var11_attributes, dtype="float32", id=var11_name)
     if var12 is not None:
         if var12_name == '':
             var12_name = var12.id
         if var12_time_name is not None:
             var12 = TimeButNotTime(var12, var12_time_name, frequency)
-        o.write(var12, attributes=var12_attributes, dtype='float32', id=var12_name)
+        o.write(var12, attributes=var12_attributes, dtype="float32", id=var12_name)
+    my_keys = sorted([key for key in kwargs.keys() if "var" in key and str(key.replace("var", "")).isdigit() is True],
+                     key=lambda v: v.upper())
+    for key in my_keys:
+        if kwargs[key] is not None:
+            if key + "_name" not in kwargs.keys() or (key + "_name" in kwargs.keys() and kwargs[key + "_name"] == ''):
+                kwargs[key + "_name"] = kwargs[key].id
+            if key + "_time_name" in kwargs.keys() and kwargs[key + "_time_name"] is not None:
+                kwargs[key] = TimeButNotTime(kwargs[key], kwargs[key + "_time_name"], frequency)
+            if key + "_attributes" not in kwargs.keys():
+                kwargs[key + "_attributes"] = {}
+            o.write(kwargs[key], attributes=kwargs[key + "_attributes"], dtype="float32", id=kwargs[key + "_name"])
     for att in global_attributes.keys():
         o.__setattr__(att, global_attributes[att])
     o.close()
@@ -2117,11 +2347,10 @@ def SkewnessTemporal(tab):
     tab = tab.reorder('t...')
     if len(tab.shape) > 4:
         list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": too many dimensions",
-            str().ljust(5) + "tab.shape = " + str(tab.shape)
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
-    elif len(tab.shape) == 1:
+            "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": too many dimensions",
+            str().ljust(5) + "tab.shape = " + str(tab.shape)]
+        EnsoErrorsWarnings.my_error(list_strings)
+    if len(tab.shape) == 1:
         skew = float(SCIPYstats__skew(tab))
     else:
         if len(tab.shape) == 2:
@@ -2137,9 +2366,9 @@ def SkewnessTemporal(tab):
             channels = NPproduct(spac_ax)
             # Reshape to two dimensions (time, space) creating the design matrix
             dataset = dataset.reshape([time_ax, channels])
-            # Find the indices of values that are not missing in one row. All the rows will have missing values in the same
-            # places provided the array was centered. If it wasn't then it is possible that some missing values will be
-            # missed and the singular value decomposition will produce not a number for everything.
+            # Find the indices of values that are not missing in one row. All the rows will have missing values in the
+            # same places provided the array was centered. If it wasn't then it is possible that some missing values
+            # will be missed and the singular value decomposition will produce not a number for everything.
             nonMissingIndex = NPwhere(NPisnan(dataset[0]) == False)[0]
             # Remove missing values from the design matrix.
             dataNoMissing = dataset[:, nonMissingIndex]
@@ -2174,16 +2403,13 @@ def SmoothGaussian(tab, axis=0, window=5):
     """
     if window % 2 == 0:
         list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": smoothing window (running mean)",
-            str().ljust(5) + "the window of smoothing must be an odd number: " + str(window)
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
+            "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": smoothing window (running mean)",
+            str().ljust(5) + "the window of smoothing must be an odd number: " + str(window)]
+        EnsoErrorsWarnings.my_error(list_strings)
     if axis > len(tab.shape) - 1:
-        list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": axis",
-            str().ljust(5) + "axis number too big: " + str(axis)
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
+        list_strings = ["ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": axis",
+                        str().ljust(5) + "axis number too big: " + str(axis)]
+        EnsoErrorsWarnings.my_error(list_strings)
     # Reorder tab in order to put 'axis' in first position
     indices = range(len(tab.shape))
     indices.remove(axis)
@@ -2247,16 +2473,13 @@ def SmoothSquare(tab, axis=0, window=5):
     """
     if window % 2 == 0:
         list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": smoothing window (running mean)",
-            str().ljust(5) + "the window of smoothing must be an odd number: " + str(window)
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
+            "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": smoothing window (running mean)",
+            str().ljust(5) + "the window of smoothing must be an odd number: " + str(window)]
+        EnsoErrorsWarnings.my_error(list_strings)
     if axis > len(tab.shape)-1:
-        list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": axis",
-            str().ljust(5) + "axis number too big: " + str(axis)
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
+        list_strings = ["ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": axis",
+                        str().ljust(5) + "axis number too big: " + str(axis)]
+        EnsoErrorsWarnings.my_error(list_strings)
     # Reorder tab in order to put 'axis' in first position
     indices = range(len(tab.shape))
     indices.remove(axis)
@@ -2305,16 +2528,13 @@ def SmoothTriangle(tab, axis=0, window=5):
     """
     if window % 2 == 0:
         list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": smoothing window (running mean)",
-            str().ljust(5) + "the window of smoothing must be an odd number: " + str(window)
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
+            "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": smoothing window (running mean)",
+            str().ljust(5) + "the window of smoothing must be an odd number: " + str(window)]
+        EnsoErrorsWarnings.my_error(list_strings)
     if axis > len(tab.shape)-1:
-        list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": axis",
-            str().ljust(5) + "axis number too big: " + str(axis)
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
+        list_strings = ["ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": axis",
+                        str().ljust(5) + "axis number too big: " + str(axis)]
+        EnsoErrorsWarnings.my_error(list_strings)
     # Reorder tab in order to put 'axis' in first position
     indices = range(len(tab.shape))
     indices.remove(axis)
@@ -2404,9 +2624,9 @@ def SeasonalMean(tab, season, compute_anom=False):
     try:
         sea_dict[season]
     except:
-        list_strings = ["ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": season",
+        list_strings = ["ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": season",
                         str().ljust(5) + "unknown season: " + str(season)]
-        EnsoErrorsWarnings.MyError(list_strings)
+        EnsoErrorsWarnings.my_error(list_strings)
     else:
         if season in ['DJ', 'NDJ', 'DJF', 'ONDJ', 'NDJF', 'NDJF']:
             # these 'seasons' are between two years
@@ -2489,11 +2709,10 @@ def Smoothing(tab, info, axis=0, window=5, method='triangle'):
     try: dict_smooth[method]
     except:
         list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": smoothing method (running mean)",
+            "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": smoothing method (running mean)",
             str().ljust(5) + "unkwown smoothing method: " + str(method),
-            str().ljust(10) + "known smoothing method: " + str(sorted(dict_smooth.keys(), key=lambda v: v.upper())),
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
+            str().ljust(10) + "known smoothing method: " + str(sorted(dict_smooth.keys(), key=lambda v: v.upper()))]
+        EnsoErrorsWarnings.my_error(list_strings)
     info = info + ', smoothing using a ' + str(method) + ' shaped window of ' + str(window) + ' points'
     return dict_smooth[method](tab, axis=axis, window=window), info
 
@@ -2570,7 +2789,7 @@ def TimeButNotTime(tab, new_time_name, frequency):
     elif frequency == 'yearly':
         freq = 'years'
     else:
-        EnsoErrorsWarnings.UnknownFrequency(frequency, INSPECTstack())
+        EnsoErrorsWarnings.unknown_frequency(frequency, INSPECTstack())
     axis = CDMS2createAxis(range(len(tab_out)), id=new_time_name)
     axis.units = freq + " since " + str(year1) + "-" + str(month1) + "-" + str(day1)
     axis.axis = freq
@@ -2653,10 +2872,9 @@ def CustomLinearRegression(y, x, sign_x=0, return_stderr=True, return_intercept=
         else:
             if x.shape != y.shape:
                 list_strings = [
-                    "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": array shape",
-                    str().ljust(5) + "different array shape for x " + str(x.shape) + " and y " + str(y.shape),
-                ]
-                EnsoErrorsWarnings.MyError(list_strings)
+                    "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": array shape",
+                    str().ljust(5) + "different array shape for x " + str(x.shape) + " and y " + str(y.shape)]
+                EnsoErrorsWarnings.my_error(list_strings)
             slope, intercept, stderr = MV2zeros(y[0].shape), MV2zeros(y[0].shape), MV2zeros(y[0].shape)
             for ii in range(len(y[0])):
                 try:
@@ -2679,12 +2897,11 @@ def CustomLinearRegression(y, x, sign_x=0, return_stderr=True, return_intercept=
                                         CustomLinearRegression1d(y[:, ii, jj, kk], x[:, ii, jj, kk], sign_x=sign_x)
                                 else:
                                     list_strings = [
-                                        "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) +
+                                        "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) +
                                         ": array shape",
                                         str().ljust(5) + str(x.shape) + " too many dimensions (not programmed)",
-                                        str().ljust(5) + "Please ckeck and modify the program if needed"
-                                    ]
-                                    EnsoErrorsWarnings.MyError(list_strings)
+                                        str().ljust(5) + "Please ckeck and modify the program if needed"]
+                                    EnsoErrorsWarnings.my_error(list_strings)
 
     else:
         results = GENUTILlinearregression(y, x=x, error=1, nointercept=None)
@@ -2728,6 +2945,42 @@ def CustomLinearRegression1d(y, x, sign_x=1):
         results = GENUTILlinearregression(y[idx], x=x[idx], error=1, nointercept=None)
         slope, intercept, stderr = float(results[0][0]), float(results[0][1]), float(results[1][0])
     return slope, intercept, stderr
+
+
+def fill_dict_teleconnection(tab1, tab2, dataset1, dataset2, timebounds1, timebounds2, nyear1, nyear2, nbr, var_name,
+                             add_name, units, centered_rmse=0, biased_rmse=1, dict_metric={}, dict_nc={}, ev_name=None,
+                             events1=None, events2=None):
+    # Metric 1
+    rmse_dive, keyerror = RmsAxis(tab1, tab2, axis="xy", centered=centered_rmse, biased=biased_rmse)
+    rmse_error_dive = None
+    # Metric 2
+    corr_dive = float(Correlation(tab1, tab2, axis="xy", centered=1, biased=1))
+    corr_error_dive = None
+    # Metric 3
+    std_mod_dive = Std(tab1, weights=None, axis="xy", centered=1, biased=1)
+    std_obs_dive = Std(tab2, weights=None, axis="xy", centered=1, biased=1)
+    std_dive = float(std_mod_dive) / float(std_obs_dive)
+    std_error_dive = None
+    list_met_name = ["RMSE_" + dataset2, "RMSE_error_" + dataset2, "CORR_" + dataset2, "CORR_error_" + dataset2,
+                     "STD_" + dataset2, "STD_error_" + dataset2]
+    list_metric_value = [rmse_dive, rmse_error_dive, corr_dive, corr_error_dive, std_dive, std_error_dive]
+    for tmp1, tmp2 in zip(list_met_name, list_metric_value):
+        dict_metric[tmp1 + "_" + add_name] = tmp2
+    dict_nc["var" + str(nbr)] = tab1
+    dict_dive = {"units": units, "number_of_years_used": nyear1, "time_period": str(timebounds1),
+                 "spatialSTD_" + dataset1: std_mod_dive}
+    if isinstance(events1, list) is True:
+        dict_dive[ev_name + "_years"] = str(events1)
+    dict_nc["var" + str(nbr) + "_attributes"] = dict_dive
+    dict_nc["var" + str(nbr) + "_name"] = var_name + dataset1
+    dict_dive = {"units": units, "number_of_years_used": nyear2, "time_period": str(timebounds2),
+                 "spatialSTD_" + dataset2: std_obs_dive}
+    if isinstance(events2, list) is True:
+        dict_dive[ev_name + "_years"] = str(events2)
+    dict_nc["var" + str(nbr + 1)] = tab2
+    dict_nc["var" + str(nbr + 1) + "_attributes"] = dict_dive
+    dict_nc["var" + str(nbr + 1) + "_name"] = var_name + dataset2
+    return dict_metric, dict_nc
 
 
 def FindXYMinMaxInTs(tab, return_val='both', smooth=False, axis=0, window=5, method='triangle'):
@@ -2774,101 +3027,116 @@ def FindXYMinMaxInTs(tab, return_val='both', smooth=False, axis=0, window=5, met
             tmp, unneeded = Smoothing(tab[tt], '', axis=axis, window=window, method=method)
         else:
             tmp = deepcopy(tab[tt])
-        tab_ts.append(FindXYMinMax(tmp, return_val=return_val))
+        tab_ts.append(find_xy_min_max(tmp, return_val=return_val))
     tab_ts = MV2array(tab_ts)
     tab_ts.setAxis(0, tab.getAxis(0))
     return tab_ts
 
 
 def MyDerive(project, internal_variable_name, dict_var):
-    # test input parameters
-    if not isinstance(project, basestring):
-        EnsoErrorsWarnings.ObjectTypeError('project', 'string', type(project), INSPECTstack())
-    if not isinstance(internal_variable_name, basestring):
-        EnsoErrorsWarnings.ObjectTypeError('internal_variable_name', 'string', type(internal_variable_name),
-                                           INSPECTstack())
-    if not isinstance(dict_var, dict):
-        EnsoErrorsWarnings.ObjectTypeError('project', 'dictionary', type(dict_var), INSPECTstack())
-
     # get dictionary of observations
     dict_obs = ReferenceObservations()
-
+    # test input parameters
+    keyerror1, keyerror2, keyerror3, keyerror4 = None, None, None, None
+    if not isinstance(project, basestring):
+        keyerror1 = "project is not well defined (" + str(project) + ")"
+        EnsoErrorsWarnings.object_type_error('project', 'string', type(project), INSPECTstack())
+    if not isinstance(internal_variable_name, basestring):
+        keyerror2 = "internal_variable_name is not well defined (" + str(internal_variable_name) + ")"
+        EnsoErrorsWarnings.object_type_error('internal_variable_name', 'string', type(internal_variable_name),
+                                             INSPECTstack())
+    if not isinstance(dict_var, dict):
+        keyerror3 = "dictionary of variable is not well defined (" + str(internal_variable_name) + ")"
+        EnsoErrorsWarnings.object_type_error('project', 'dictionary', type(dict_var), INSPECTstack())
     # wrong project?
-    if 'CMIP' not in project and project not in dict_obs.keys():
+    if 'CMIP' not in project and project not in dict_obs.keys() and keyerror1 is None:
+        keyerror4 = "project is not well defined (" + str(project) + ")"
         list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) +
-            ": project",
+            "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": project",
             str().ljust(5) + "unknown 'project' (or observations dataset): " + str(project),
-            str().ljust(10) + "it must be either a 'CMIP' project or an observations dataset defined in\
-                    EnsoCollectionsLib.ReferenceObservations",
-            str().ljust(10) + "known observations dataset: " + str(sorted(dict_obs.keys(), key=lambda v: v.upper()))
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
+            str().ljust(10) + "it must be either a 'CMIP' project or an observations dataset defined in " +
+            "EnsoCollectionsLib.ReferenceObservations",
+            str().ljust(10) + "known observations dataset: " + str(sorted(dict_obs.keys(), key=lambda v: v.upper()))]
+        EnsoErrorsWarnings.my_warning(list_strings)
 
-    # compute 'internal_variable_name' in 'CMIP' case
-    if 'CMIP' in project:
-        # get dictionary of CMIP
-        dict_CMIP = CmipVariables()['variable_name_in_file']
-        # test if 'internal_variable_name' is defined in EnsoCollectionsLib.CmipVariables
-        if internal_variable_name in dict_CMIP.keys():
-            list_var = dict_CMIP[internal_variable_name]['var_name']
-            outvar = MyDeriveCompute(list_var, dict_var, dict_att=dict_CMIP, variable=internal_variable_name,
-                                     project=project)
-    # compute 'internal_variable_name' in 'obs' case
+    if (keyerror1 is not None or keyerror2 is not None or keyerror3 is not None or keyerror4 is not None):
+        outvar = None
+        keyerror = add_up_errors([keyerror1, keyerror2, keyerror3, keyerror4])
     else:
-        # 'project' is defined in EnsoCollectionsLib.ReferenceObservations
-        dict_obs_var = dict_obs[project]['variable_name_in_file']
-        # test if 'internal_variable_name' is defined for this observations dataset
-        if internal_variable_name in dict_obs_var.keys():
-            list_var = dict_obs_var[internal_variable_name]['var_name']
-            outvar = MyDeriveCompute(list_var, dict_var, dict_att=dict_obs_var, variable=internal_variable_name,
-                                     isObs=True)
-    return outvar
+        # compute 'internal_variable_name' in 'CMIP' case
+        if 'CMIP' in project:
+            # get dictionary of CMIP
+            dict_CMIP = CmipVariables()['variable_name_in_file']
+            # test if 'internal_variable_name' is defined in EnsoCollectionsLib.CmipVariables
+            if internal_variable_name in dict_CMIP.keys():
+                list_var = dict_CMIP[internal_variable_name]['var_name']
+                outvar, keyerror = MyDeriveCompute(
+                    list_var, dict_var, dict_att=dict_CMIP, variable=internal_variable_name, project=project)
+            else:
+                outvar = None
+                keyerror = "variable (" + str(internal_variable_name) + ") not defined in CmipVariables"
+        # compute 'internal_variable_name' in 'obs' case
+        else:
+            # 'project' is defined in EnsoCollectionsLib.ReferenceObservations
+            dict_obs_var = dict_obs[project]['variable_name_in_file']
+            # test if 'internal_variable_name' is defined for this observations dataset
+            if internal_variable_name in dict_obs_var.keys():
+                list_var = dict_obs_var[internal_variable_name]['var_name']
+                outvar, keyerror = MyDeriveCompute(
+                    list_var, dict_var, dict_att=dict_obs_var, variable=internal_variable_name, isObs=True)
+            else:
+                outvar = None
+                keyerror = "variable (" + str(internal_variable_name) + ") not defined in ReferenceObservations[" +\
+                           str(project) + "]"
+    return outvar, keyerror
 
 
 def MyDeriveCompute(list_var, dict_var, dict_att={}, variable='', isObs=False, project=''):
     # test if keys in list_var are in 'dict_var'
-    StringInDict(list_var, dict_var, INSPECTstack())
+    string_in_dict(list_var, dict_var, INSPECTstack())
     if isinstance(list_var, basestring):
         # this 'internal_variable_name' is based on one variable
+        keyerror = None
         outvar = dict_var[list_var]
     else:
         # this 'internal_variable_name' is based on several variables
         list_operator = dict_att[variable]['algebric_calculation']
         if len(list_operator) != len(list_var):
+            outvar = None
+            keyerror = str(len(list_var)) + " variables are needed to compute " + str(variable) + " but " + \
+                       str(len(list_operator)) + " operator(s) are given"
             if isObs is True:
                 list_strings = [
-                    "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) +
+                    "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) +
                     ": variable definition in EnsoCollectionsLib.ReferenceObservations(" + str(project) + ")",
                     str().ljust(5) + str(len(list_var)) + " variables are needed to compute " +
-                    str(variable) + " but " + str(len(list_operator)) + " operator(s) are given"
-                ]
+                    str(variable) + " but " + str(len(list_operator)) + " operator(s) are given"]
             else:
-                list_strings = [
-                    "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) +
-                    ": variable definition in EnsoCollectionsLib.CmipVariables",
-                    str().ljust(5) + str(len(list_var)) + " variables are needed to compute " +
-                    str(variable) + " but " + str(len(list_operator)) + " operator(s) are given"
-                ]
-            EnsoErrorsWarnings.MyError(list_strings)
-        # compute the output variable
-        if list_operator[0] == 'minus':
-            outvar = -1 * dict_var[list_var[0]]
+                list_strings = ["ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) +
+                                ": variable definition in EnsoCollectionsLib.CmipVariables",
+                                str().ljust(5) + str(len(list_var)) + " variables are needed to compute " +
+                                str(variable) + " but " + str(len(list_operator)) + " operator(s) are given"]
+            EnsoErrorsWarnings.my_warning(list_strings)
         else:
-            outvar = dict_var[list_var[0]]
-        for ii in range(1, len(list_var)):
-            outvar = dict_operations[list_operator[ii]](outvar, dict_var[list_var[ii]])
-        outvar.setAxisList(dict_var[list_var[0]].getAxisList())
-        outvar = MV2masked_where(dict_var[list_var[0]].mask, outvar)
-        outvar.setGrid(dict_var[list_var[0]].getGrid())
-    return outvar
+            keyerror = None
+            # compute the output variable
+            if list_operator[0] == 'minus':
+                outvar = -1 * dict_var[list_var[0]]
+            else:
+                outvar = dict_var[list_var[0]]
+            for ii in range(1, len(list_var)):
+                outvar = dict_operations[list_operator[ii]](outvar, dict_var[list_var[ii]])
+            outvar.setAxisList(dict_var[list_var[0]].getAxisList())
+            outvar = MV2masked_where(dict_var[list_var[0]].mask, outvar)
+            outvar.setGrid(dict_var[list_var[0]].getGrid())
+    return outvar, keyerror
 
 
 def LinearRegressionAndNonlinearity(y, x, return_stderr=True, return_intercept=True):
     """
     #################################################################################
     Description:
-    UvcdatCustomLinearRegression applied for all values of x, for values of x>=0, for values of x<=0
+    CustomLinearRegression applied for all values of x, for values of x>=0, for values of x<=0
 
     Uses uvcdat
     #################################################################################
@@ -2967,7 +3235,7 @@ def LinearRegressionTsAgainstTs(y, x, nbr_years_window, return_stderr=True, freq
     elif frequency == 'yearly':
         nbr_timestep = nbr_years_window
     else:
-        EnsoErrorsWarnings.UnknownFrequency(frequency, INSPECTstack())
+        EnsoErrorsWarnings.unknown_frequency(frequency, INSPECTstack())
     tab_yy_mm = Event_selection(y, frequency, nbr_years_window=nbr_years_window)
     myshape = [nbr_timestep] + [ss for ss in y.shape[1:]]
     tmp_ax = CDMS2createAxis(range(nbr_timestep), id='months')
@@ -3016,67 +3284,77 @@ def LinearRegressionTsAgainstTs(y, x, nbr_years_window, return_stderr=True, freq
 
 
 def PreProcessTS(tab, info, areacell=None, average=False, compute_anom=False, compute_sea_cycle=False, debug=False,
-                 **kwargs):
+                 region=None, **kwargs):
+    keyerror = None
     # removes annual cycle (anomalies with respect to the annual cycle)
     if compute_anom is True:
         tab = ComputeInterannualAnomalies(tab)
     # Normalization of the anomalies
     if kwargs['normalization']:
         if kwargs['frequency'] is not None:
-            tab = Normalize(tab, kwargs['frequency'])
+            tab, keyerror = Normalize(tab, kwargs['frequency'])
             info = info + ', normalized'
     # Removing linear trend
-    if isinstance(kwargs['detrending'], dict):
-        known_args = {'axis', 'method', 'bp'}
-        extra_args = set(kwargs['detrending']) - known_args
-        if extra_args:
-            EnsoErrorsWarnings.UnknownKeyArg(extra_args, INSPECTstack())
-        tab, info = Detrend(tab, info, **kwargs['detrending'])
-    # Smoothing time series
-    if isinstance(kwargs['smoothing'], dict):
-        known_args = {'axis', 'method', 'window'}
-        extra_args = set(kwargs['smoothing']) - known_args
-        if extra_args:
-            EnsoErrorsWarnings.UnknownKeyArg(extra_args, INSPECTstack())
-        tab, info = Smoothing(tab, info, **kwargs['smoothing'])
-    # computes mean annual cycle
-    if compute_sea_cycle is True:
-        tab = annualcycle(tab)
-    # average
-    if average is not False:
-        if debug is True:
-            EnsoErrorsWarnings.DebugMode('\033[93m', "EnsoUvcdatToolsLib PreProcessTS", 20)
-            dict_debug = {'axes1':  str([ax.id for ax in tab.getAxisList()]), 'shape1': str(tab.shape)}
-            EnsoErrorsWarnings.DebugMode('\033[93m', "averaging to perform: " + str(average), 25, **dict_debug)
-        if isinstance(average, basestring):
-            try: dict_average[average]
-            except:
-                EnsoErrorsWarnings.UnknownAveraging(average, dict_average.keys(), INSPECTstack())
-            else:
-                tab = dict_average[average](tab, areacell)
-                if debug is True:
-                    dict_debug = {'axes1': str([ax.id for ax in tab.getAxisList()]), 'shape1': str(tab.shape)}
-                    EnsoErrorsWarnings.DebugMode('\033[93m', "performed " + str(average), 25, **dict_debug)
-        elif isinstance(average, list):
-            for av in average:
-                try: dict_average[av]
+    if keyerror is None:
+        if isinstance(kwargs['detrending'], dict):
+            known_args = {'axis', 'method', 'bp'}
+            extra_args = set(kwargs['detrending']) - known_args
+            if extra_args:
+                EnsoErrorsWarnings.unknown_key_arg(extra_args, INSPECTstack())
+            tab, info, keyerror = Detrend(tab, info, **kwargs['detrending'])
+    if keyerror is None:
+        # Smoothing time series
+        if isinstance(kwargs['smoothing'], dict):
+            known_args = {'axis', 'method', 'window'}
+            extra_args = set(kwargs['smoothing']) - known_args
+            if extra_args:
+                EnsoErrorsWarnings.unknown_key_arg(extra_args, INSPECTstack())
+            tab, info = Smoothing(tab, info, **kwargs['smoothing'])
+        # computes mean annual cycle
+        if compute_sea_cycle is True:
+            tab = annualcycle(tab)
+        # average
+        if average is not False:
+            if debug is True:
+                EnsoErrorsWarnings.debug_mode('\033[93m', "EnsoUvcdatToolsLib PreProcessTS", 20)
+                dict_debug = {'axes1':  str([ax.id for ax in tab.getAxisList()]), 'shape1': str(tab.shape)}
+                EnsoErrorsWarnings.debug_mode('\033[93m', "averaging to perform: " + str(average), 25, **dict_debug)
+            if isinstance(average, basestring):
+                try: dict_average[average]
                 except:
-                    EnsoErrorsWarnings.UnknownAveraging(average, dict_average.keys(), INSPECTstack())
+                    EnsoErrorsWarnings.unknown_averaging(average, dict_average.keys(), INSPECTstack())
                 else:
-                    tab = dict_average[av](tab, areacell)
-                    if debug is True:
-                        dict_debug = {'axes1': str([ax.id for ax in tab.getAxisList()]), 'shape1': str(tab.shape)}
-                        EnsoErrorsWarnings.DebugMode('\033[93m', "performed " + str(av), 25, **dict_debug)
-        else:
-            EnsoErrorsWarnings.UnknownAveraging(average, dict_average.keys(), INSPECTstack())
-    return tab, info
+                    tab, keyerror = dict_average[average](tab, areacell, region=region, **kwargs)
+                    if keyerror is None:
+                        if debug is True:
+                            dict_debug = {'axes1': str([ax.id for ax in tab.getAxisList()]), 'shape1': str(tab.shape)}
+                            EnsoErrorsWarnings.debug_mode('\033[93m', "performed " + str(average), 25, **dict_debug)
+            elif isinstance(average, list):
+                for av in average:
+                    try: dict_average[av]
+                    except:
+                        EnsoErrorsWarnings.unknown_averaging(average, dict_average.keys(), INSPECTstack())
+                    else:
+                        tab, keyerror = dict_average[av](tab, areacell, region=region, **kwargs)
+                        if keyerror is None:
+                            if debug is True:
+                                dict_debug = {'axes1': str([ax.id for ax in tab.getAxisList()]),
+                                              'shape1': str(tab.shape)}
+                                EnsoErrorsWarnings.debug_mode('\033[93m', "performed " + str(av), 25, **dict_debug)
+                        else:
+                            break
+            else:
+                EnsoErrorsWarnings.unknown_averaging(average, dict_average.keys(), INSPECTstack())
+    else:
+        tab = None
+    return tab, info, keyerror
 
 
 def ReadSelectRegionCheckUnits(filename, varname, varfamily, box=None, time_bounds=None, frequency=None, **keyarg):
     """
     #################################################################################
     Description:
-    Combines UvcdatReadAndSelectRegion and UvcdatCheckUnits
+    Combines ReadAndSelectRegion and CheckUnits
     Reads the given 'varname' from the given 'filename', selects the given 'box' and checks the 'varname''s units
     depending on 'vartype'
 
@@ -3116,35 +3394,25 @@ def Read_data_mask_area(file_data, name_data, type_data, metric, region, file_ar
     # Read variable
     if debug is True:
         dict_debug = {'file1': '(' + type_data + ') ' + str(file_data), 'var1': '(' + type_data + ') ' + str(name_data)}
-        EnsoErrorsWarnings.DebugMode('\033[93m', 'Files', 20, **dict_debug)
+        EnsoErrorsWarnings.debug_mode('\033[93m', 'Files', 20, **dict_debug)
     variable, keyerror1 = ReadSelectRegionCheckUnits(file_data, name_data, type_data, box=region,
                                                      time_bounds=time_bounds, **kwargs)
     if debug is True:
         dict_debug = {'axes1': '(' + type_data + ') ' + str([ax.id for ax in variable.getAxisList()]),
                       'shape1': '(' + type_data + ') ' + str(variable.shape),
                       'time1': '(' + type_data + ') ' + str(TimeBounds(variable))}
-        EnsoErrorsWarnings.DebugMode('\033[93m', 'after ReadSelectRegionCheckUnits', 20, **dict_debug)
+        EnsoErrorsWarnings.debug_mode('\033[93m', 'after ReadSelectRegionCheckUnits', 20, **dict_debug)
     # checks if the time-period fulfills the minimum length criterion
     if isinstance(kwargs['min_time_steps'], int):
         if len(variable) < kwargs['min_time_steps']:
-            EnsoErrorsWarnings.TooShortTimePeriod(metric, len(variable), kwargs['min_time_steps'], INSPECTstack())
+            EnsoErrorsWarnings.too_short_time_period(metric, len(variable), kwargs['min_time_steps'], INSPECTstack())
             keyerror2 = "too short time period (" + str(len(variable)) + ")"
     # Read areacell & mask
-    variable, areacell, keyerror3 = Read_mask_area(variable, file_data, type_data, region, file_area=file_area,
-                                                   name_area=name_area, file_mask=file_mask, name_mask=name_mask,
-                                                   maskland=maskland, maskocean=maskocean, debug=debug, **kwargs)
+    variable, areacell, keyerror3 = Read_mask_area(
+        variable, name_data, file_data, type_data, region, file_area=file_area, name_area=name_area,
+        file_mask=file_mask, name_mask=name_mask, maskland=maskland, maskocean=maskocean, debug=debug, **kwargs)
     if keyerror1 is not None or keyerror2 is not None or keyerror3 is not None:
-        keyerror = ''
-        if keyerror1 is not None:
-            keyerror = keyerror1
-        if len(keyerror) > 0 and keyerror2 is not None:
-            keyerror += " ; "
-        if keyerror2 is not None:
-            keyerror += keyerror2
-        if len(keyerror) > 0 and keyerror3 is not None:
-            keyerror += " ; "
-        if keyerror3 is not None:
-            keyerror += keyerror3
+        keyerror = add_up_errors([keyerror1, keyerror2, keyerror3])
     else:
         keyerror = None
     return variable, areacell, keyerror
@@ -3202,26 +3470,25 @@ def Read_data_mask_area_multifile(file_data, name_data, type_data, variable, met
                 Read_data_mask_area(ff1, nn1, type_data, metric, region, file_area=fa1, name_area=an1, file_mask=fl1,
                                     name_mask=ln1, maskland=maskland, maskocean=maskocean, debug=debug, **kwargs)
             dict_area[nn1], dict_keye[nn1], dict_var[nn1] = areacell, keyerror, tab
-    list_var = sorted(dict_var.keys())
-    if len(list_var) > 1:
-        for ii in range(2):
-            for var in list_var[1:]:
-                dict_var[list_var[0]], dict_var[var], unneeded =\
-                    CheckTime(dict_var[list_var[0]], dict_var[var], metric_name=metric, **kwargs)
-    tab = MyDerive(kwargs[interpreter], variable, dict_var)
-    areacell = dict_area[dict_area.keys()[0]]
-    keyerror = ''
-    for ii in dict_keye.keys():
-        if len(keyerror) > 0 and dict_keye[ii] is not None:
-            keyerror += " ; "
-        if dict_keye[ii] is not None:
-            keyerror += dict_keye[ii]
-    if len(keyerror) == 0:
-        keyerror = None
+    keyerror = add_up_errors([dict_keye[ii] for ii in dict_keye.keys()])
+    if keyerror is None:
+        list_var = sorted(dict_var.keys())
+        if len(list_var) > 1:
+            for ii in range(2):
+                for var in list_var[1:]:
+                    dict_var[list_var[0]], dict_var[var], keyerror =\
+                        CheckTime(dict_var[list_var[0]], dict_var[var], metric_name=metric, **kwargs)
+                    if keyerror is not None:
+                        break
+    if keyerror is not None:
+        tab, areacell = None, None
+    else:
+        tab, keyerror = MyDerive(kwargs[interpreter], variable, dict_var)
+        areacell = dict_area[dict_area.keys()[0]]
     return tab, areacell, keyerror
 
 
-def Read_mask_area(tab, file_data, type_data, region, file_area='', name_area='', file_mask='', name_mask='',
+def Read_mask_area(tab, name_data, file_data, type_data, region, file_area='', name_area='', file_mask='', name_mask='',
                    maskland=False, maskocean=False, debug=False, **kwargs):
     tab_out = deepcopy(tab)
     keyerror1, keyerror2 = None, None
@@ -3230,27 +3497,31 @@ def Read_mask_area(tab, file_data, type_data, region, file_area='', name_area=''
         areacell = ReadAreaSelectRegion(file_area, areaname=name_area, box=region, **kwargs)
     else:
         areacell = ReadAreaSelectRegion(file_data, areaname=name_area, box=region, **kwargs)
+    if areacell is not None and tab.getGrid().shape != areacell.getGrid().shape:
+        areacell = None
     if debug is True:
         if areacell is not None:
             dict_debug = {'axes1': '(' + type_data + ') ' + str([ax.id for ax in areacell.getAxisList()]),
                           'shape1': '(' + type_data + ') ' + str(areacell.shape)}
-            EnsoErrorsWarnings.DebugMode('\033[93m', 'after ReadAreaSelectRegion', 20, **dict_debug)
+            EnsoErrorsWarnings.debug_mode('\033[93m', 'after ReadAreaSelectRegion', 20, **dict_debug)
         else:
             dict_debug = {'line1': 'areacell is None '}
-            EnsoErrorsWarnings.DebugMode('\033[93m', 'after ReadAreaSelectRegion', 20, **dict_debug)
+            EnsoErrorsWarnings.debug_mode('\033[93m', 'after ReadAreaSelectRegion', 20, **dict_debug)
     # Read landmask
-    if file_mask:
-        landmask = ReadLandmaskSelectRegion(file_mask, landmaskname=name_mask, box=region, **kwargs)
+    if name_data in ["msla", "sla", "sshg", "ssh", "sst", "taux", "tauuo", "tos", "zos"]:
+        landmask = None
+    elif file_mask:
+        landmask = ReadLandmaskSelectRegion(tab, file_mask, landmaskname=name_mask, box=region, **kwargs)
     else:
-        landmask = ReadLandmaskSelectRegion(file_data, landmaskname=name_mask, box=region, **kwargs)
+        landmask = ReadLandmaskSelectRegion(tab, file_data, landmaskname=name_mask, box=region, **kwargs)
     if debug is True:
         if landmask is not None:
             dict_debug = {'axes1': '(' + type_data + ') ' + str([ax.id for ax in landmask.getAxisList()]),
                           'shape1': '(' + type_data + ') ' + str(landmask.shape)}
-            EnsoErrorsWarnings.DebugMode('\033[93m', 'after ReadLandmaskSelectRegion', 20, **dict_debug)
+            EnsoErrorsWarnings.debug_mode('\033[93m', 'after ReadLandmaskSelectRegion', 20, **dict_debug)
         else:
             dict_debug = {'line1': 'landmask is None '}
-            EnsoErrorsWarnings.DebugMode('\033[93m', 'after ReadLandmaskSelectRegion', 20, **dict_debug)
+            EnsoErrorsWarnings.debug_mode('\033[93m', 'after ReadLandmaskSelectRegion', 20, **dict_debug)
     # Apply landmask
     if landmask is not None:
         tab_out, keyerror1 = ApplyLandmask(tab_out, landmask, maskland=maskland, maskocean=maskocean)
@@ -3259,13 +3530,7 @@ def Read_mask_area(tab, file_data, type_data, region, file_area='', name_area=''
                 areacell = ArrayOnes(landmask, id='areacell')
             areacell, keyerror2 = ApplyLandmaskToArea(areacell, landmask, maskland=maskland, maskocean=maskocean)
     if keyerror1 is not None or keyerror2 is not None:
-        keyerror = ''
-        if keyerror1 is not None:
-            keyerror = keyerror1
-        if len(keyerror) > 0 and keyerror2 is not None:
-            keyerror += " ; "
-        if keyerror2 is not None:
-            keyerror += keyerror2
+        keyerror = add_up_errors([keyerror1, keyerror2])
     else:
         keyerror = None
     return tab_out, areacell, keyerror
@@ -3307,19 +3572,19 @@ def SlabOcean(tab1, tab2, month1, month2, events, frequency=None, debug=False):
         normalized cumulative SST change by an anomalous ocean circulation (in C/C)
     """
     if debug is True:
-        EnsoErrorsWarnings.DebugMode('\033[93m', "EnsoUvcdatToolsLib SlabOcean", 20)
+        EnsoErrorsWarnings.debug_mode('\033[93m', "EnsoUvcdatToolsLib SlabOcean", 20)
     # months and associated position
     list_months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
     if month1 in list_months and month2 in list_months:
         mm1 = list_months.index(month1)
         mm2 = list_months.index(month2)
     else:
-        list_strings = ["ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": month"]
+        list_strings = ["ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": month"]
         if month1 not in list_months:
             list_strings.append(str().ljust(5) + "unknown month1 : " + str(month1))
         if month2 not in list_months:
             list_strings.append(str().ljust(5) + "unknown month2 : " + str(month2))
-        EnsoErrorsWarnings.MyError(list_strings)
+        EnsoErrorsWarnings.my_error(list_strings)
     # sea water constants
     cp = 4000   # J/(kg * K) (specific heat capacity at constant pressure of sea water)
     rho = 1024  # kg/m3      (average density of sea water)
@@ -3332,7 +3597,7 @@ def SlabOcean(tab1, tab2, month1, month2, events, frequency=None, debug=False):
         dict_debug = {'axes1': '(sst) ' + str([ax.id for ax in sstA.getAxisList()]),
                       'axes2': '(thf) ' + str([ax.id for ax in thfA.getAxisList()]),
                       'shape1': '(sst) ' + str(sstA.shape), 'shape2': '(thf) ' + str(thfA.shape)}
-        EnsoErrorsWarnings.DebugMode('\033[93m', 'after Event_selection', 25, **dict_debug)
+        EnsoErrorsWarnings.debug_mode('\033[93m', 'after Event_selection', 25, **dict_debug)
     # cumulative anomalies
     myshape = [len(events), mm2-mm1+1] + [ss for ss in tab1.shape[1:]]
     dSST = MV2zeros(myshape)
@@ -3342,13 +3607,13 @@ def SlabOcean(tab1, tab2, month1, month2, events, frequency=None, debug=False):
         dSSTthf[:, ii - mm1 + 1] = dSSTthf[:, ii - mm1] + thfA[:, ii + 1]
     if debug is True:
         dict_debug = {'shape1': '(dSST) ' + str(dSST.shape), 'shape2': '(dSSTthf) ' + str(dSSTthf.shape)}
-        EnsoErrorsWarnings.DebugMode('\033[93m', 'after cumulative_anomalies', 25, **dict_debug)
+        EnsoErrorsWarnings.debug_mode('\033[93m', 'after cumulative_anomalies', 25, **dict_debug)
     # normalized heat flux-driven SST change
     dt = MV2zeros(dSSTthf.shape)
     dt = dt.reorder('10')
     dt[:] = dSST[:, -1]
     dt = dt.reorder('10')
-    dt = MV2masked_where(abs(dt) < 0.05, dt)
+    dt = MV2masked_where(abs(dt) < 0.1, dt)
     dSSTthf[:] = fraction * dSSTthf[:] / dt
     # normalized SST change
     dSST[:] = dSST[:] / dt
@@ -3364,7 +3629,7 @@ def SlabOcean(tab1, tab2, month1, month2, events, frequency=None, debug=False):
         dict_debug = {'axes1': 'axes ' + str(axes[0]), 'axes2': 'axes[:] ' + str(axes[0][:]),
                       'shape1': '(dSST) ' + str(dSST.shape), 'shape2': '(dSSTthf) ' + str(dSSTthf.shape),
                       'shape3': '(dSSToce) ' + str(dSSToce.shape)}
-        EnsoErrorsWarnings.DebugMode('\033[93m', 'after mean dSST', 25, **dict_debug)
+        EnsoErrorsWarnings.debug_mode('\033[93m', 'after mean dSST', 25, **dict_debug)
     if len(tab1.shape) > 1:
         axes = axes + tab1.getAxisList()[1:]
     dSST.setAxisList(axes)
@@ -3376,7 +3641,7 @@ def SlabOcean(tab1, tab2, month1, month2, events, frequency=None, debug=False):
                       'axes3': '(dSSToce) ' + str([ax.id for ax in dSSToce.getAxisList()]),
                       'shape1': '(dSST) ' + str(dSST.shape), 'shape2': '(dSSTthf) ' + str(dSSTthf.shape),
                       'shape3': '(dSSToce) ' + str(dSSToce.shape)}
-        EnsoErrorsWarnings.DebugMode('\033[93m', 'output', 25, **dict_debug)
+        EnsoErrorsWarnings.debug_mode('\033[93m', 'output', 25, **dict_debug)
     return dSST, dSSTthf, dSSToce
 
 
@@ -3405,14 +3670,20 @@ def TimeAnomaliesLinearRegressionAndNonlinearity(tab2, tab1, return_stderr=True)
         unadjusted standard error of the linear regression of y over x (if return_stderr=True)
     """
     # horizontal average
-    tab1 = dict_average['horizontal'](tab1)
-    tab2 = dict_average['horizontal'](tab2)
-    # removes annual cycle (anomalies with respect to the annual cycle)
-    tab1 = cdutil.ANNUALCYCLE.departures(tab1)
-    tab2 = cdutil.ANNUALCYCLE.departures(tab2)
-    # computes linear regression of tab2 on tab1 for all values of tab1, for values of tab1>=0, for values of tab1<=0
-    lr, lrpos, lrneg = LinearRegressionAndNonlinearity(tab2, tab1, return_stderr=return_stderr)
-    return lr, lrpos, lrneg
+    tab1, keyerror1 = dict_average['horizontal'](tab1)
+    tab2, keyerror2 = dict_average['horizontal'](tab2)
+    if keyerror1 is not None or keyerror2 is not None:
+        lr, lrpos, lrneg = None, None, None
+        keyerror = add_up_errors([keyerror1, keyerror2])
+    else:
+        keyerror = None
+        # removes annual cycle (anomalies with respect to the annual cycle)
+        tab1 = ComputeInterannualAnomalies(tab1)
+        tab2 = ComputeInterannualAnomalies(tab2)
+        # computes linear regression of tab2 on tab1 for all values of tab1, for values of tab1>=0,
+        # for values of tab1<=0
+        lr, lrpos, lrneg = LinearRegressionAndNonlinearity(tab2, tab1, return_stderr=return_stderr)
+    return lr, lrpos, lrneg, keyerror
 
 
 def TimeAnomaliesStd(tab):
@@ -3431,10 +3702,13 @@ def TimeAnomaliesStd(tab):
         standard deviation (one value) of the masked_array averaged spatially and with the annual cycle removed
     """
     # horizontal average
-    tab = dict_average['horizontal'](tab)
-    # computes standard deviation
-    std = float(GENUTILstd(tab, weights=None, axis=0, centered=1, biased=1))
-    return std
+    tab, keyerror = dict_average['horizontal'](tab)
+    if keyerror is not None:
+        std = None
+    else:
+        # computes standard deviation
+        std = float(GENUTILstd(tab, weights=None, axis=0, centered=1, biased=1))
+    return std, keyerror
 
 
 def TsToMap(tab, map_ref):
@@ -3455,10 +3729,9 @@ def TsToMap(tab, map_ref):
     """
     if len(map_ref.shape) > 6:
         list_strings = [
-            "ERROR" + EnsoErrorsWarnings.MessageFormating(INSPECTstack()) + ": too many dimensions",
-            str().ljust(5) + "map_ref.shape = " + str(map_ref.shape)
-        ]
-        EnsoErrorsWarnings.MyError(list_strings)
+            "ERROR" + EnsoErrorsWarnings.message_formating(INSPECTstack()) + ": too many dimensions",
+            str().ljust(5) + "map_ref.shape = " + str(map_ref.shape)]
+        EnsoErrorsWarnings.my_error(list_strings)
     map_out = MV2zeros(map_ref.shape)
     map_out = CDMS2createVariable(map_out, axes=map_ref.getAxisList(), grid=map_ref.getGrid(), mask=map_ref.mask,
                                   attributes=map_ref.attributes, id=tab.id)
@@ -3524,7 +3797,7 @@ def TwoVarRegrid(model, obs, info, region=None, model_orand_obs=0, newgrid=None,
     known_args = {'missing', 'order', 'mask', 'newgrid_name', 'regridder', 'regridTool', 'regridMethod'}
     extra_args = set(keyarg) - known_args
     if extra_args:
-        EnsoErrorsWarnings.UnknownKeyArg(extra_args, INSPECTstack())
+        EnsoErrorsWarnings.unknown_key_arg(extra_args, INSPECTstack())
     grid_obs = obs.getGrid()
     grid_model = model.getGrid()
     # select case:
